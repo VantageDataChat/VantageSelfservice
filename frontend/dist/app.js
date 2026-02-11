@@ -1748,6 +1748,11 @@
             html += '<div class="admin-pending-meta">';
             html += '<span>' + i18n.t('admin_pending_user') + ': ' + escapeHtml(q.user_id || '-') + '</span>';
             html += '<span>' + escapeHtml(timeStr) + '</span>';
+            if (q.product_name) {
+                html += '<span style="background:#EEF2FF;color:#4F46E5;padding:2px 8px;border-radius:4px;font-size:0.8rem;">' + escapeHtml(q.product_name) + '</span>';
+            } else {
+                html += '<span style="background:#F3F4F6;color:#6B7280;padding:2px 8px;border-radius:4px;font-size:0.8rem;">' + i18n.t('admin_doc_product_public') + '</span>';
+            }
             html += '</div>';
             html += '<span class="admin-badge ' + statusClass + '">' + escapeHtml(statusText) + '</span>';
             html += '</div>';
