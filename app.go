@@ -622,6 +622,7 @@ type MaskedConfig struct {
 	SMTP         config.SMTPConfig      `json:"smtp"`
 	ProductIntro string                 `json:"product_intro"`
 	ProductName  string                 `json:"product_name"`
+	Video        config.VideoConfig     `json:"video"`
 }
 
 // MaskedOAuthConfig holds OAuth config with secrets masked.
@@ -655,6 +656,7 @@ func (a *App) GetConfig() *MaskedConfig {
 		SMTP:         cfg.SMTP,
 		ProductIntro: cfg.ProductIntro,
 		ProductName:  cfg.ProductName,
+		Video:        cfg.Video,
 	}
 
 	// Mask API keys
@@ -695,6 +697,14 @@ func (a *App) UpdateConfig(updates map[string]interface{}) error {
 	a.queryEngine.UpdateServices(es, ls, cfg)
 	a.docManager.UpdateEmbeddingService(es)
 	a.pendingManager.UpdateServices(es, ls)
+
+	// Propagate video config to DocumentManager if any video settings changed
+	for key := range updates {
+		if strings.HasPrefix(key, "video.") {
+			a.docManager.SetVideoConfig(cfg.Video)
+			break
+		}
+	}
 
 	// Refresh OAuth client if any OAuth settings changed
 	for key := range updates {

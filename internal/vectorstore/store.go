@@ -52,6 +52,8 @@ type SearchResult struct {
 	Score        float64 `json:"score"`
 	ImageURL     string  `json:"image_url,omitempty"`
 	ProductID    string  `json:"product_id"`
+	StartTime    float64 `json:"start_time,omitempty"` // 视频起始时间（秒）
+	EndTime      float64 `json:"end_time,omitempty"`   // 视频结束时间（秒）
 }
 
 // cachedChunk holds a chunk's metadata and pre-computed data for fast similarity.

@@ -135,6 +135,8 @@ askflow/
 │   │   └── manager.go           # 待处理问题管理
 │   ├── product/
 │   │   └── service.go           # 产品管理（CRUD、管理员产品分配）
+│   ├── backup/
+│   │   └── backup.go            # 数据备份与恢复（全量/增量）
 │   └── email/
 │       └── service.go           # SMTP 邮件发送（验证/测试）
 │
@@ -311,6 +313,8 @@ curl -X POST http://localhost:8080/api/query \
 ```
 askflow                                              启动 HTTP 服务
 askflow import [--product <product_id>] <目录> [...]  批量导入文档到知识库
+askflow backup [选项]                                 备份整站数据
+askflow restore <备份文件>                             从备份恢复数据
 askflow help                                         显示帮助信息
 ```
 
@@ -329,6 +333,56 @@ askflow import --product <product_id> ./docs
 不指定 `--product` 时，文档将导入到公共库。若指定的产品 ID 不存在，系统将报错并中止导入。
 
 支持的文件扩展名：`.pdf` `.doc` `.docx` `.xls` `.xlsx` `.ppt` `.pptx` `.md` `.markdown`
+
+### 数据备份与恢复
+
+系统提供按数据类型分层的备份机制，支持全量和增量两种模式。
+
+备份文件命名格式：`helpdesk_<模式>_<主机名>_<日期-时间>.tar.gz`，例如 `helpdesk_full_myserver_20260212-143000.tar.gz`。
+
+#### 全量备份
+
+将完整数据库快照、全部上传文件、配置和加密密钥打包为 tar.gz 归档。
+
+```bash
+# 备份到当前目录
+askflow backup
+
+# 备份到指定目录
+askflow backup --output ./backups
+```
+
+#### 增量备份
+
+基于上次备份的 manifest 文件，仅导出新增的数据库行和新上传的文件。可变数据表（用户、待处理问题、产品等）会全量导出以确保更新不丢失。
+
+```bash
+askflow backup --incremental --base ./backups/helpdesk_full_myserver_20260212-143000.manifest.json
+```
+
+增量备份按数据级别工作，而非文件级别：
+- 仅追加表（documents、chunks 等）：只导出 `created_at` 晚于上次备份的新行
+- 可变表（users、pending_questions、products 等）：全表导出（行可能被更新）
+- 临时表（sessions、email_tokens）：跳过（无需备份）
+- 上传文件：只打包新增的目录
+
+#### 恢复
+
+```bash
+# 从全量备份恢复
+askflow restore helpdesk_full_myserver_20260212-143000.tar.gz
+
+# 恢复到指定目录
+askflow restore --target ./data-new backup.tar.gz
+```
+
+增量恢复流程：先恢复全量备份，再依次应用增量备份中的 `db_delta.sql`：
+
+```bash
+askflow restore full-backup.tar.gz
+askflow restore incremental-backup.tar.gz
+sqlite3 ./data/helpdesk.db < ./data/db_delta.sql
+```
 
 ---
 
@@ -516,12 +570,27 @@ build.cmd
 
 ### 数据备份
 
+系统内置命令行备份工具，支持全量和增量备份。详见[命令行用法](#命令行用法)中的"数据备份与恢复"章节。
+
 关键数据文件：
 - `data/config.json` — 系统配置
 - `data/helpdesk.db` — 数据库（文档记录、向量、用户、会话等）
 - `data/encryption.key` — 加密密钥（丢失后无法解密已加密的 API Key）
 - `data/uploads/` — 上传的原始文档
 - `data/images/` — 知识条目图片
+
+备份示例：
+
+```bash
+# 全量备份
+askflow backup --output ./backups
+
+# 增量备份（基于上次全量）
+askflow backup --output ./backups --incremental --base ./backups/helpdesk_full_myserver_20260212-143000.manifest.json
+
+# 恢复
+askflow restore ./backups/helpdesk_full_myserver_20260212-143000.tar.gz
+```
 
 ---
 

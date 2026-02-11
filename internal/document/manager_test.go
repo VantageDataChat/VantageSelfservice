@@ -10,6 +10,7 @@ import (
 	"testing/quick"
 
 	"helpdesk/internal/chunker"
+	"helpdesk/internal/config"
 	"helpdesk/internal/db"
 	"helpdesk/internal/parser"
 	"helpdesk/internal/vectorstore"
@@ -325,6 +326,77 @@ func TestDeleteDocument(t *testing.T) {
 	}
 }
 
+func TestDeleteDocument_CascadeVideoSegments(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	dm := newTestManager(t, database, &mockEmbeddingService{})
+
+	docID := "test-video-doc-001"
+
+	// Insert a document record
+	_, err := database.Exec(
+		`INSERT INTO documents (id, name, type, status, created_at) VALUES (?, ?, ?, ?, datetime('now'))`,
+		docID, "test.mp4", "video", "success",
+	)
+	if err != nil {
+		t.Fatalf("failed to insert document: %v", err)
+	}
+
+	// Insert video_segments records for this document
+	for i, seg := range []struct {
+		segType   string
+		startTime float64
+		endTime   float64
+		content   string
+	}{
+		{"transcript", 0.0, 5.0, "hello world"},
+		{"transcript", 5.0, 10.0, "second segment"},
+		{"keyframe", 3.0, 3.0, "/tmp/frame_0001.jpg"},
+	} {
+		_, err := database.Exec(
+			`INSERT INTO video_segments (id, document_id, segment_type, start_time, end_time, content, chunk_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			fmt.Sprintf("seg-%d", i), docID, seg.segType, seg.startTime, seg.endTime, seg.content, fmt.Sprintf("chunk-%d", i),
+		)
+		if err != nil {
+			t.Fatalf("failed to insert video_segment: %v", err)
+		}
+	}
+
+	// Verify segments exist
+	var count int
+	err = database.QueryRow(`SELECT COUNT(*) FROM video_segments WHERE document_id = ?`, docID).Scan(&count)
+	if err != nil {
+		t.Fatalf("failed to count video_segments: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("expected 3 video_segments before delete, got %d", count)
+	}
+
+	// Delete the document
+	if err := dm.DeleteDocument(docID); err != nil {
+		t.Fatalf("DeleteDocument error: %v", err)
+	}
+
+	// Verify video_segments are gone
+	err = database.QueryRow(`SELECT COUNT(*) FROM video_segments WHERE document_id = ?`, docID).Scan(&count)
+	if err != nil {
+		t.Fatalf("failed to count video_segments after delete: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected 0 video_segments after delete, got %d", count)
+	}
+
+	// Verify document record is also gone
+	err = database.QueryRow(`SELECT COUNT(*) FROM documents WHERE id = ?`, docID).Scan(&count)
+	if err != nil {
+		t.Fatalf("failed to count documents after delete: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected 0 documents after delete, got %d", count)
+	}
+}
+
 func TestListDocuments_Empty(t *testing.T) {
 	database, cleanup := setupTestDB(t)
 	defer cleanup()
@@ -427,6 +499,123 @@ func TestGenerateID_Uniqueness(t *testing.T) {
 		if len(id) != 32 {
 			t.Fatalf("expected 32-char hex ID, got %d chars: %s", len(id), id)
 		}
+	}
+}
+
+func TestUploadFile_VideoTypesAccepted(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	dm := newTestManager(t, database, &mockEmbeddingService{})
+
+	// Video types should be accepted (not rejected at type validation)
+	videoTypes := []string{"mp4", "avi", "mkv", "mov", "webm"}
+	for _, ft := range videoTypes {
+		doc, err := dm.UploadFile(UploadFileRequest{
+			FileName: "test." + ft,
+			FileData: []byte("fake-video-data"),
+			FileType: ft,
+		})
+		if err != nil && err.Error() == "不支持的文件格式" {
+			t.Errorf("video type %q should be supported but was rejected", ft)
+		}
+		// Without VideoConfig, it should fail with config error
+		if err == nil && doc != nil && doc.Status == "failed" {
+			if doc.Error != "视频检索功能未启用，请先在设置中配置 ffmpeg 和 whisper 路径" {
+				t.Logf("video type %q failed with unexpected error: %s", ft, doc.Error)
+			}
+		}
+	}
+}
+
+func TestUploadFile_VideoRejectedWhenConfigEmpty(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	dm := newTestManager(t, database, &mockEmbeddingService{})
+	// VideoConfig is zero-value (both paths empty) by default
+
+	doc, err := dm.UploadFile(UploadFileRequest{
+		FileName:  "test.mp4",
+		FileData:  []byte("fake-video-data"),
+		FileType:  "mp4",
+		ProductID: "prod-1",
+	})
+	if err != nil {
+		t.Fatalf("UploadFile should not return error, got: %v", err)
+	}
+	if doc.Status != "failed" {
+		t.Fatalf("expected status 'failed', got %q", doc.Status)
+	}
+	expectedErr := "视频检索功能未启用，请先在设置中配置 ffmpeg 和 whisper 路径"
+	if doc.Error != expectedErr {
+		t.Fatalf("expected error %q, got %q", expectedErr, doc.Error)
+	}
+}
+
+func TestUploadFile_VideoRejectedWhenBothPathsEmpty(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	dm := newTestManager(t, database, &mockEmbeddingService{})
+	// Explicitly set empty config
+	dm.SetVideoConfig(config.VideoConfig{
+		FFmpegPath:  "",
+		WhisperPath: "",
+	})
+
+	doc, err := dm.UploadFile(UploadFileRequest{
+		FileName: "video.avi",
+		FileData: []byte("fake-video-data"),
+		FileType: "avi",
+	})
+	if err != nil {
+		t.Fatalf("UploadFile should not return error, got: %v", err)
+	}
+	if doc.Status != "failed" {
+		t.Fatalf("expected status 'failed', got %q", doc.Status)
+	}
+	if doc.Error != "视频检索功能未启用，请先在设置中配置 ffmpeg 和 whisper 路径" {
+		t.Fatalf("unexpected error: %s", doc.Error)
+	}
+}
+
+func TestUploadFile_VideoDocumentRecordCreated(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	dm := newTestManager(t, database, &mockEmbeddingService{})
+
+	doc, err := dm.UploadFile(UploadFileRequest{
+		FileName:  "test.mp4",
+		FileData:  []byte("fake-video-data"),
+		FileType:  "mp4",
+		ProductID: "prod-1",
+	})
+	if err != nil {
+		t.Fatalf("UploadFile should not return error, got: %v", err)
+	}
+	// Document should be created even if processing fails
+	if doc == nil {
+		t.Fatal("expected non-nil document")
+	}
+	if doc.Type != "mp4" {
+		t.Fatalf("expected type 'mp4', got %q", doc.Type)
+	}
+	if doc.ProductID != "prod-1" {
+		t.Fatalf("expected product_id 'prod-1', got %q", doc.ProductID)
+	}
+
+	// Verify the DB record exists
+	docs, err := dm.ListDocuments("")
+	if err != nil {
+		t.Fatalf("ListDocuments error: %v", err)
+	}
+	if len(docs) != 1 {
+		t.Fatalf("expected 1 document, got %d", len(docs))
+	}
+	if docs[0].Type != "mp4" {
+		t.Fatalf("expected DB type 'mp4', got %q", docs[0].Type)
 	}
 }
 

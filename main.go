@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"helpdesk/internal/auth"
+	"helpdesk/internal/backup"
 	"helpdesk/internal/captcha"
 	"helpdesk/internal/chunker"
 	"helpdesk/internal/config"
@@ -62,6 +64,7 @@ func main() {
 	es := embedding.NewAPIEmbeddingService(cfg.Embedding.Endpoint, cfg.Embedding.APIKey, cfg.Embedding.ModelName, cfg.Embedding.UseMultimodal)
 	ls := llm.NewAPILLMService(cfg.LLM.Endpoint, cfg.LLM.APIKey, cfg.LLM.ModelName, cfg.LLM.Temperature, cfg.LLM.MaxTokens)
 	dm := document.NewDocumentManager(dp, tc, es, vs, database)
+	dm.SetVideoConfig(cfg.Video)
 	ps := product.NewProductService(database)
 
 	// Check for CLI subcommands
@@ -69,6 +72,12 @@ func main() {
 		switch os.Args[1] {
 		case "import":
 			runBatchImport(os.Args[2:], dm, ps)
+			return
+		case "backup":
+			runBackup(os.Args[2:], database)
+			return
+		case "restore":
+			runRestore(os.Args[2:])
 			return
 		case "help", "-h", "--help":
 			printUsage()
@@ -147,6 +156,8 @@ func printUsage() {
 	fmt.Println(`用法:
   helpdesk                                        启动 HTTP 服务（默认端口 8080）
   helpdesk import [--product <product_id>] <目录> [...]  批量导入目录下的文档到知识库
+  helpdesk backup [选项]                           备份整站数据
+  helpdesk restore <备份文件>                       从备份恢复数据
   helpdesk help                                   显示此帮助信息
 
 import 命令:
@@ -162,7 +173,37 @@ import 命令:
   示例:
     helpdesk import ./docs
     helpdesk import ./docs ./manuals /path/to/files
-    helpdesk import --product abc123 ./docs`)
+    helpdesk import --product abc123 ./docs
+
+backup 命令:
+  将整站数据按类型分层备份为 tar.gz 归档。
+  全量模式: 完整数据库快照 + 全部上传文件 + 配置
+  增量模式: 仅导出新增数据库行 + 新上传文件 + 配置（可变表全量导出）
+
+  备份文件命名: helpdesk_<模式>_<主机名>_<日期-时间>.tar.gz
+  例如: helpdesk_full_myserver_20260212-143000.tar.gz
+
+  选项:
+    --output <目录>    备份文件输出目录（默认当前目录）
+    --incremental      增量备份模式
+    --base <manifest>  增量备份的基准 manifest 文件路径（增量模式必需）
+
+  示例:
+    helpdesk backup                                    全量备份到当前目录
+    helpdesk backup --output ./backups                 全量备份到指定目录
+    helpdesk backup --incremental --base ./backups/helpdesk_full_myserver_20260212-143000.manifest.json
+
+restore 命令:
+  从备份归档恢复数据到 data 目录。
+  全量恢复: 直接解压即可运行
+  增量恢复: 先恢复全量备份，再依次应用增量备份的 db_delta.sql
+
+  选项:
+    --target <目录>    恢复目标目录（默认 ./data）
+
+  示例:
+    helpdesk restore helpdesk_full_myserver_20260212-143000.tar.gz
+    helpdesk restore --target ./data-new backup.tar.gz`)
 }
 
 
@@ -297,6 +338,96 @@ func runBatchImport(args []string, dm *document.DocumentManager, ps *product.Pro
 	}
 
 	fmt.Printf("\n导入完成: 成功 %d, 失败 %d, 共 %d\n", success, failed, len(files))
+}
+
+// runBackup executes a full or incremental backup of the data directory.
+func runBackup(args []string, db *sql.DB) {
+	opts := backup.Options{
+		DataDir: "./data",
+		Mode:    "full",
+	}
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--output", "-o":
+			if i+1 >= len(args) {
+				fmt.Println("错误: --output 需要指定目录")
+				os.Exit(1)
+			}
+			opts.OutputDir = args[i+1]
+			i++
+		case "--incremental":
+			opts.Mode = "incremental"
+		case "--base":
+			if i+1 >= len(args) {
+				fmt.Println("错误: --base 需要指定 manifest 文件路径")
+				os.Exit(1)
+			}
+			opts.ManifestIn = args[i+1]
+			i++
+		default:
+			fmt.Printf("未知参数: %s\n", args[i])
+			fmt.Println("用法: helpdesk backup [--output <目录>] [--incremental --base <manifest>]")
+			os.Exit(1)
+		}
+	}
+
+	if opts.OutputDir != "" {
+		if err := os.MkdirAll(opts.OutputDir, 0755); err != nil {
+			fmt.Printf("创建输出目录失败: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	fmt.Printf("开始%s备份...\n", map[string]string{"full": "全量", "incremental": "增量"}[opts.Mode])
+
+	result, err := backup.Run(db, opts)
+	if err != nil {
+		fmt.Printf("备份失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("备份完成:\n")
+	fmt.Printf("  归档文件: %s\n", result.ArchivePath)
+	fmt.Printf("  Manifest: %s\n", result.ManifestPath)
+	fmt.Printf("  文件数: %d, 数据库行数: %d\n", result.FilesWritten, result.DBRows)
+	fmt.Printf("  归档大小: %.2f MB\n", float64(result.BytesWritten)/(1024*1024))
+}
+
+// runRestore restores data from a backup archive.
+func runRestore(args []string) {
+	targetDir := "./data"
+	var archivePath string
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--target", "-t":
+			if i+1 >= len(args) {
+				fmt.Println("错误: --target 需要指定目录")
+				os.Exit(1)
+			}
+			targetDir = args[i+1]
+			i++
+		default:
+			if archivePath != "" {
+				fmt.Printf("未知参数: %s\n", args[i])
+				os.Exit(1)
+			}
+			archivePath = args[i]
+		}
+	}
+
+	if archivePath == "" {
+		fmt.Println("错误: 请指定备份文件路径")
+		fmt.Println("用法: helpdesk restore [--target <目录>] <备份文件>")
+		os.Exit(1)
+	}
+
+	fmt.Printf("从 %s 恢复数据到 %s ...\n", archivePath, targetDir)
+	if err := backup.Restore(archivePath, targetDir); err != nil {
+		fmt.Printf("恢复失败: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 

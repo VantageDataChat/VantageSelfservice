@@ -55,10 +55,12 @@ type DebugInfo struct {
 
 // SourceRef represents a reference to a source document chunk.
 type SourceRef struct {
-	DocumentName string `json:"document_name"`
-	ChunkIndex   int    `json:"chunk_index"`
-	Snippet      string `json:"snippet"`
-	ImageURL     string `json:"image_url,omitempty"`
+	DocumentName string  `json:"document_name"`
+	ChunkIndex   int     `json:"chunk_index"`
+	Snippet      string  `json:"snippet"`
+	ImageURL     string  `json:"image_url,omitempty"`
+	StartTime    float64 `json:"start_time,omitempty"` // 视频起始时间（秒）
+	EndTime      float64 `json:"end_time,omitempty"`   // 视频结束时间（秒）
 }
 
 // DebugSearchHit holds a single search result's diagnostic info.
@@ -291,6 +293,7 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 				if debugMode {
 					dbg.Steps = append(dbg.Steps, "TextMatch: Level 1 returning cached answer — zero API cost")
 				}
+				textResults = qe.enrichVideoTimeInfo(textResults)
 				sources := make([]SourceRef, 0, len(textResults))
 				for _, r := range textResults {
 					snippet := r.ChunkText
@@ -302,6 +305,8 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 						ChunkIndex:   r.ChunkIndex,
 						Snippet:      snippet,
 						ImageURL:     r.ImageURL,
+						StartTime:    r.StartTime,
+						EndTime:      r.EndTime,
 					})
 				}
 				return &QueryResponse{Answer: cachedAnswer, Sources: sources, DebugInfo: dbg}, nil
@@ -329,6 +334,7 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 						if debugMode {
 							dbg.Steps = append(dbg.Steps, "TextMatch: Level 2 returning cached answer — no LLM cost")
 						}
+						vecResults = qe.enrichVideoTimeInfo(vecResults)
 						sources := make([]SourceRef, 0, len(vecResults))
 						for _, r := range vecResults {
 							snippet := r.ChunkText
@@ -340,6 +346,8 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 								ChunkIndex:   r.ChunkIndex,
 								Snippet:      snippet,
 								ImageURL:     r.ImageURL,
+								StartTime:    r.StartTime,
+								EndTime:      r.EndTime,
 							})
 						}
 						return &QueryResponse{Answer: cachedAnswer, Sources: sources, DebugInfo: dbg}, nil
@@ -483,6 +491,9 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 		}
 	}
 
+	// Step 3.6: Enrich search results with video time information from video_segments table
+	results = qe.enrichVideoTimeInfo(results)
+
 	// Step 4: If still no results, create pending question
 	if len(results) == 0 {
 		if debugMode {
@@ -608,6 +619,8 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 			ChunkIndex:   r.ChunkIndex,
 			Snippet:      snippet,
 			ImageURL:     r.ImageURL,
+			StartTime:    r.StartTime,
+			EndTime:      r.EndTime,
 		}
 	}
 
@@ -865,3 +878,26 @@ func mergeSearchResults(a, b []vectorstore.SearchResult, topK int) []vectorstore
 	}
 	return merged
 }
+// enrichVideoTimeInfo queries the video_segments table to fill in StartTime and EndTime
+// for search results that correspond to video content. The chunk_id in video_segments
+// is formatted as "{docID}-{chunkIndex}".
+func (qe *QueryEngine) enrichVideoTimeInfo(results []vectorstore.SearchResult) []vectorstore.SearchResult {
+	if qe.db == nil || len(results) == 0 {
+		return results
+	}
+	for i, r := range results {
+		chunkID := fmt.Sprintf("%s-%d", r.DocumentID, r.ChunkIndex)
+		var startTime, endTime float64
+		err := qe.db.QueryRow(
+			`SELECT start_time, end_time FROM video_segments WHERE chunk_id = ?`,
+			chunkID,
+		).Scan(&startTime, &endTime)
+		if err == nil {
+			results[i].StartTime = startTime
+			results[i].EndTime = endTime
+		}
+	}
+	return results
+}
+
+

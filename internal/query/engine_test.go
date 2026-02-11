@@ -91,7 +91,19 @@ func setupTestDB(t *testing.T) *sql.DB {
 		answered_at DATETIME
 	)`)
 	if err != nil {
-		t.Fatalf("failed to create table: %v", err)
+		t.Fatalf("failed to create pending_questions table: %v", err)
+	}
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS video_segments (
+		id           TEXT PRIMARY KEY,
+		document_id  TEXT NOT NULL,
+		segment_type TEXT NOT NULL,
+		start_time   REAL NOT NULL,
+		end_time     REAL NOT NULL,
+		content      TEXT NOT NULL,
+		chunk_id     TEXT NOT NULL
+	)`)
+	if err != nil {
+		t.Fatalf("failed to create video_segments table: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	return db
@@ -451,5 +463,128 @@ func TestQuery_ContextPassedToLLM(t *testing.T) {
 	}
 	if capturedQuestion != "my question" {
 		t.Errorf("expected question 'my question', got %q", capturedQuestion)
+	}
+}
+
+func TestEnrichVideoTimeInfo(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Insert video_segments records for two chunks
+	_, err := db.Exec(
+		`INSERT INTO video_segments (id, document_id, segment_type, start_time, end_time, content, chunk_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"seg1", "doc1", "transcript", 10.5, 25.3, "some transcript text", "doc1-0",
+	)
+	if err != nil {
+		t.Fatalf("failed to insert video_segment: %v", err)
+	}
+	_, err = db.Exec(
+		`INSERT INTO video_segments (id, document_id, segment_type, start_time, end_time, content, chunk_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"seg2", "doc1", "keyframe", 30.0, 30.0, "/tmp/frame.jpg", "doc1-1",
+	)
+	if err != nil {
+		t.Fatalf("failed to insert video_segment: %v", err)
+	}
+
+	qe := NewQueryEngine(nil, nil, nil, db, defaultConfig())
+
+	t.Run("enriches results with matching video_segments", func(t *testing.T) {
+		results := []vectorstore.SearchResult{
+			{DocumentID: "doc1", ChunkIndex: 0, ChunkText: "transcript chunk", Score: 0.9},
+			{DocumentID: "doc1", ChunkIndex: 1, ChunkText: "keyframe chunk", Score: 0.8},
+		}
+		enriched := qe.enrichVideoTimeInfo(results)
+
+		if enriched[0].StartTime != 10.5 {
+			t.Errorf("expected StartTime=10.5, got %f", enriched[0].StartTime)
+		}
+		if enriched[0].EndTime != 25.3 {
+			t.Errorf("expected EndTime=25.3, got %f", enriched[0].EndTime)
+		}
+		if enriched[1].StartTime != 30.0 {
+			t.Errorf("expected StartTime=30.0, got %f", enriched[1].StartTime)
+		}
+		if enriched[1].EndTime != 30.0 {
+			t.Errorf("expected EndTime=30.0, got %f", enriched[1].EndTime)
+		}
+	})
+
+	t.Run("leaves non-video results unchanged", func(t *testing.T) {
+		results := []vectorstore.SearchResult{
+			{DocumentID: "doc2", ChunkIndex: 0, ChunkText: "regular doc chunk", Score: 0.9},
+		}
+		enriched := qe.enrichVideoTimeInfo(results)
+
+		if enriched[0].StartTime != 0 {
+			t.Errorf("expected StartTime=0, got %f", enriched[0].StartTime)
+		}
+		if enriched[0].EndTime != 0 {
+			t.Errorf("expected EndTime=0, got %f", enriched[0].EndTime)
+		}
+	})
+
+	t.Run("handles empty results", func(t *testing.T) {
+		results := []vectorstore.SearchResult{}
+		enriched := qe.enrichVideoTimeInfo(results)
+		if len(enriched) != 0 {
+			t.Errorf("expected empty results, got %d", len(enriched))
+		}
+	})
+
+	t.Run("handles nil db gracefully", func(t *testing.T) {
+		qeNilDB := NewQueryEngine(nil, nil, nil, nil, defaultConfig())
+		results := []vectorstore.SearchResult{
+			{DocumentID: "doc1", ChunkIndex: 0, ChunkText: "chunk", Score: 0.9},
+		}
+		enriched := qeNilDB.enrichVideoTimeInfo(results)
+		if enriched[0].StartTime != 0 {
+			t.Errorf("expected StartTime=0 with nil db, got %f", enriched[0].StartTime)
+		}
+	})
+}
+
+func TestQuery_VideoTimeInfoPropagatedToSourceRef(t *testing.T) {
+	db := setupTestDB(t)
+
+	// Insert a video_segments record
+	_, err := db.Exec(
+		`INSERT INTO video_segments (id, document_id, segment_type, start_time, end_time, content, chunk_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"seg1", "video-doc", "transcript", 5.0, 15.0, "video transcript", "video-doc-0",
+	)
+	if err != nil {
+		t.Fatalf("failed to insert video_segment: %v", err)
+	}
+
+	es := &mockEmbeddingService{
+		embedFn: func(text string) ([]float64, error) {
+			return []float64{0.1, 0.2, 0.3}, nil
+		},
+	}
+	vs := &mockVectorStore{
+		searchFn: func(queryVector []float64, topK int, threshold float64, productID string) ([]vectorstore.SearchResult, error) {
+			return []vectorstore.SearchResult{
+				{ChunkText: "video transcript text", ChunkIndex: 0, DocumentID: "video-doc", DocumentName: "intro.mp4", Score: 0.95},
+			}, nil
+		},
+	}
+	ls := &mockLLMService{
+		generateFn: func(prompt string, context []string, question string) (string, error) {
+			return "Here is the answer from the video.", nil
+		},
+	}
+
+	qe := NewQueryEngine(es, vs, ls, db, defaultConfig())
+	resp, err := qe.Query(QueryRequest{Question: "What does the video say?", UserID: "user1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(resp.Sources) == 0 {
+		t.Fatal("expected at least 1 source")
+	}
+	if resp.Sources[0].StartTime != 5.0 {
+		t.Errorf("expected SourceRef.StartTime=5.0, got %f", resp.Sources[0].StartTime)
+	}
+	if resp.Sources[0].EndTime != 15.0 {
+		t.Errorf("expected SourceRef.EndTime=15.0, got %f", resp.Sources[0].EndTime)
 	}
 }

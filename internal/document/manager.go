@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -17,9 +18,11 @@ import (
 	"time"
 
 	"helpdesk/internal/chunker"
+	"helpdesk/internal/config"
 	"helpdesk/internal/embedding"
 	"helpdesk/internal/parser"
 	"helpdesk/internal/vectorstore"
+	"helpdesk/internal/video"
 )
 
 // supportedFileTypes lists the file types accepted for upload.
@@ -30,6 +33,16 @@ var supportedFileTypes = map[string]bool{
 	"ppt":      true,
 	"markdown": true,
 	"html":     true,
+	"mp4":      true,
+	"avi":      true,
+	"mkv":      true,
+	"mov":      true,
+	"webm":     true,
+}
+
+// videoFileTypes identifies which file types are video formats.
+var videoFileTypes = map[string]bool{
+	"mp4": true, "avi": true, "mkv": true, "mov": true, "webm": true,
 }
 
 // DocumentManager orchestrates document upload, processing, and lifecycle management.
@@ -41,6 +54,7 @@ type DocumentManager struct {
 	vectorStore      vectorstore.VectorStore
 	db               *sql.DB
 	httpClient       *http.Client
+	videoConfig      config.VideoConfig
 	// validateURL is a hook for URL validation (SSRF protection).
 	// Defaults to validateExternalURL. Tests can override to allow localhost.
 	validateURL func(string) error
@@ -98,6 +112,13 @@ func (dm *DocumentManager) UpdateEmbeddingService(es embedding.EmbeddingService)
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 	dm.embeddingService = es
+}
+
+// SetVideoConfig updates the video processing configuration.
+func (dm *DocumentManager) SetVideoConfig(cfg config.VideoConfig) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.videoConfig = cfg
 }
 
 // generateID creates a random UUID-like hex string.
@@ -209,11 +230,18 @@ func (dm *DocumentManager) UploadFile(req UploadFileRequest) (*DocumentInfo, err
 		fmt.Printf("Warning: failed to save original file: %v\n", err)
 	}
 
-	// Parse → Chunk → Embed → Store
-	if err := dm.processFile(docID, req.FileName, req.FileData, fileType, req.ProductID); err != nil {
-		dm.updateDocumentStatus(docID, "failed", err.Error())
+	// Dispatch based on file type
+	var processErr error
+	if videoFileTypes[fileType] {
+		processErr = dm.processVideo(docID, req.FileName, req.FileData, req.ProductID)
+	} else {
+		processErr = dm.processFile(docID, req.FileName, req.FileData, fileType, req.ProductID)
+	}
+
+	if processErr != nil {
+		dm.updateDocumentStatus(docID, "failed", processErr.Error())
 		doc.Status = "failed"
-		doc.Error = err.Error()
+		doc.Error = processErr.Error()
 		return doc, nil
 	}
 
@@ -271,7 +299,12 @@ func (dm *DocumentManager) DeleteDocument(docID string) error {
 	if err := dm.vectorStore.DeleteByDocID(docID); err != nil {
 		return fmt.Errorf("failed to delete vectors: %w", err)
 	}
-	_, err := dm.db.Exec(`DELETE FROM documents WHERE id = ?`, docID)
+	// Delete associated video_segments records (cascade cleanup for video documents)
+	_, err := dm.db.Exec(`DELETE FROM video_segments WHERE document_id = ?`, docID)
+	if err != nil {
+		return fmt.Errorf("failed to delete video segments: %w", err)
+	}
+	_, err = dm.db.Exec(`DELETE FROM documents WHERE id = ?`, docID)
 	if err != nil {
 		return fmt.Errorf("failed to delete document record: %w", err)
 	}
@@ -377,6 +410,191 @@ func (dm *DocumentManager) processFile(docID, docName string, fileData []byte, f
 	}
 
 	return nil
+}
+
+// processVideo handles video file processing: extract transcript and keyframes,
+// embed them, store vectors, and create video_segments records.
+func (dm *DocumentManager) processVideo(docID, docName string, fileData []byte, productID string) error {
+	dm.mu.RLock()
+	cfg := dm.videoConfig
+	dm.mu.RUnlock()
+
+	// Check VideoConfig is configured
+	if cfg.FFmpegPath == "" && cfg.WhisperPath == "" {
+		return fmt.Errorf("视频检索功能未启用，请先在设置中配置 ffmpeg 和 whisper 路径")
+	}
+
+	// Save video file to disk
+	uploadDir := filepath.Join(".", "data", "uploads", docID)
+	if err := os.MkdirAll(uploadDir, 0755); err != nil {
+		return fmt.Errorf("创建上传目录失败: %w", err)
+	}
+	videoPath := filepath.Join(uploadDir, filepath.Base(docName))
+	if err := os.WriteFile(videoPath, fileData, 0644); err != nil {
+		return fmt.Errorf("保存视频文件失败: %w", err)
+	}
+
+	// Create video parser and parse
+	vp := video.NewParser(cfg)
+	parseResult, err := vp.Parse(videoPath)
+	if err != nil {
+		return fmt.Errorf("视频解析失败: %w", err)
+	}
+
+	chunkIndex := 0
+
+	// Process transcript: join all segment texts → chunk → embed → store → create video_segments
+	if len(parseResult.Transcript) > 0 {
+		// Join all transcript text
+		var fullText strings.Builder
+		for _, seg := range parseResult.Transcript {
+			if fullText.Len() > 0 {
+				fullText.WriteString(" ")
+			}
+			fullText.WriteString(strings.TrimSpace(seg.Text))
+		}
+
+		if fullText.Len() > 0 {
+			// Chunk the transcript text
+			chunks := dm.chunker.Split(fullText.String(), docID)
+			if len(chunks) > 0 {
+				// Collect chunk texts for embedding
+				texts := make([]string, len(chunks))
+				for i, c := range chunks {
+					texts[i] = c.Text
+				}
+
+				// Embed
+				embeddings, err := dm.embeddingService.EmbedBatch(texts)
+				if err != nil {
+					return fmt.Errorf("转录文本嵌入失败: %w", err)
+				}
+
+				// Store vectors
+				vectorChunks := make([]vectorstore.VectorChunk, len(chunks))
+				for i, c := range chunks {
+					vectorChunks[i] = vectorstore.VectorChunk{
+						ChunkText:    c.Text,
+						ChunkIndex:   chunkIndex + i,
+						DocumentID:   docID,
+						DocumentName: docName,
+						Vector:       embeddings[i],
+						ProductID:    productID,
+					}
+				}
+				if err := dm.vectorStore.Store(docID, vectorChunks); err != nil {
+					return fmt.Errorf("转录向量存储失败: %w", err)
+				}
+
+				// Create video_segments records for each transcript chunk
+				for i, c := range chunks {
+					startTime, endTime := dm.mapChunkToTimeRange(c.Text, parseResult.Transcript)
+					segID, err := generateID()
+					if err != nil {
+						return fmt.Errorf("生成 segment ID 失败: %w", err)
+					}
+					chunkID := fmt.Sprintf("%s-%d", docID, chunkIndex+i)
+					_, err = dm.db.Exec(
+						`INSERT INTO video_segments (id, document_id, segment_type, start_time, end_time, content, chunk_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+						segID, docID, "transcript", startTime, endTime, c.Text, chunkID,
+					)
+					if err != nil {
+						return fmt.Errorf("插入 video_segments 记录失败: %w", err)
+					}
+				}
+
+				chunkIndex += len(chunks)
+			}
+		}
+	}
+
+	// Process keyframes: read each frame → base64 → EmbedImageURL → store → create video_segments
+	for i, kf := range parseResult.Keyframes {
+		frameData, err := os.ReadFile(kf.FilePath)
+		if err != nil {
+			fmt.Printf("Warning: failed to read keyframe %d: %v\n", i, err)
+			continue
+		}
+
+		// Base64 encode as data URL for EmbedImageURL
+		b64 := base64.StdEncoding.EncodeToString(frameData)
+		dataURL := "data:image/jpeg;base64," + b64
+
+		vec, err := dm.embeddingService.EmbedImageURL(dataURL)
+		if err != nil {
+			// Non-fatal: skip frames that fail to embed (Requirement 4.5)
+			fmt.Printf("Warning: failed to embed keyframe %d (%.1fs): %v\n", i, kf.Timestamp, err)
+			continue
+		}
+
+		frameChunkIndex := chunkIndex + i
+		frameChunk := []vectorstore.VectorChunk{{
+			ChunkText:    fmt.Sprintf("[视频关键帧: %.1fs]", kf.Timestamp),
+			ChunkIndex:   frameChunkIndex,
+			DocumentID:   docID,
+			DocumentName: docName,
+			Vector:       vec,
+			ImageURL:     dataURL,
+			ProductID:    productID,
+		}}
+		if err := dm.vectorStore.Store(docID, frameChunk); err != nil {
+			fmt.Printf("Warning: failed to store keyframe vector %d: %v\n", i, err)
+			continue
+		}
+
+		// Create video_segments record for keyframe
+		segID, err := generateID()
+		if err != nil {
+			fmt.Printf("Warning: failed to generate segment ID for keyframe %d: %v\n", i, err)
+			continue
+		}
+		chunkID := fmt.Sprintf("%s-%d", docID, frameChunkIndex)
+		_, err = dm.db.Exec(
+			`INSERT INTO video_segments (id, document_id, segment_type, start_time, end_time, content, chunk_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			segID, docID, "keyframe", kf.Timestamp, kf.Timestamp, kf.FilePath, chunkID,
+		)
+		if err != nil {
+			fmt.Printf("Warning: failed to insert keyframe video_segment: %v\n", err)
+		}
+	}
+
+	return nil
+}
+
+// mapChunkToTimeRange maps a chunk text back to the transcript segments to determine
+// the time range covered by the chunk. Returns the start time of the first matching
+// segment and the end time of the last matching segment.
+func (dm *DocumentManager) mapChunkToTimeRange(chunkText string, segments []video.TranscriptSegment) (float64, float64) {
+	if len(segments) == 0 {
+		return 0, 0
+	}
+
+	startTime := segments[len(segments)-1].End
+	endTime := segments[0].Start
+	found := false
+
+	for _, seg := range segments {
+		segText := strings.TrimSpace(seg.Text)
+		if segText == "" {
+			continue
+		}
+		if strings.Contains(chunkText, segText) {
+			found = true
+			if seg.Start < startTime {
+				startTime = seg.Start
+			}
+			if seg.End > endTime {
+				endTime = seg.End
+			}
+		}
+	}
+
+	if !found {
+		// Fallback: use the full range of all segments
+		return segments[0].Start, segments[len(segments)-1].End
+	}
+
+	return startTime, endTime
 }
 
 // URLPreviewResult holds the preview of fetched URL content.

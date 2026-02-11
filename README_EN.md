@@ -136,6 +136,8 @@ askflow/
 │   │   └── manager.go           # Pending question management
 │   ├── product/
 │   │   └── service.go           # Product management (CRUD, admin-product assignment)
+│   ├── backup/
+│   │   └── backup.go            # Data backup & restore (full/incremental)
 │   └── email/
 │       └── service.go           # SMTP email sending (verification/test)
 │
@@ -312,6 +314,8 @@ Supported providers: `google`, `apple`, `amazon`, `facebook`.
 ```
 askflow                                              Start HTTP server
 askflow import [--product <product_id>] <dir> [...]  Batch import documents into knowledge base
+askflow backup [options]                              Backup all site data
+askflow restore <backup_file>                         Restore data from backup
 askflow help                                         Show help information
 ```
 
@@ -330,6 +334,56 @@ askflow import --product <product_id> ./docs
 When `--product` is omitted, documents are imported into the Public Library. If the specified product ID does not exist, the system reports an error and aborts.
 
 Supported file extensions: `.pdf` `.doc` `.docx` `.xls` `.xlsx` `.ppt` `.pptx` `.md` `.markdown`
+
+### Data Backup & Restore
+
+The system provides a data-level backup mechanism with full and incremental modes.
+
+Backup filename format: `helpdesk_<mode>_<hostname>_<date-time>.tar.gz`, e.g. `helpdesk_full_myserver_20260212-143000.tar.gz`.
+
+#### Full Backup
+
+Packages a complete database snapshot, all uploaded files, config, and encryption key into a tar.gz archive.
+
+```bash
+# Backup to current directory
+askflow backup
+
+# Backup to a specific directory
+askflow backup --output ./backups
+```
+
+#### Incremental Backup
+
+Based on a previous manifest file, exports only new database rows and newly uploaded files. Mutable tables (users, pending questions, products, etc.) are fully dumped to ensure updates are not lost.
+
+```bash
+askflow backup --incremental --base ./backups/helpdesk_full_myserver_20260212-143000.manifest.json
+```
+
+Incremental backup works at the data level, not the file level:
+- Insert-only tables (documents, chunks, etc.): only rows with `created_at` after the last backup
+- Mutable tables (users, pending_questions, products, etc.): full table dump (rows may be updated)
+- Ephemeral tables (sessions, email_tokens): skipped (no need to backup)
+- Upload files: only new directories since last backup
+
+#### Restore
+
+```bash
+# Restore from a full backup
+askflow restore helpdesk_full_myserver_20260212-143000.tar.gz
+
+# Restore to a specific directory
+askflow restore --target ./data-new backup.tar.gz
+```
+
+Incremental restore workflow: first restore the full backup, then apply each incremental `db_delta.sql` in order:
+
+```bash
+askflow restore full-backup.tar.gz
+askflow restore incremental-backup.tar.gz
+sqlite3 ./data/helpdesk.db < ./data/db_delta.sql
+```
 
 ---
 
@@ -517,12 +571,27 @@ This script will:
 
 ### Data Backup
 
+The system includes a built-in CLI backup tool supporting full and incremental modes. See the [CLI Usage](#cli-usage) section for details.
+
 Critical data files:
 - `data/config.json` — System configuration
 - `data/helpdesk.db` — Database (documents, vectors, users, sessions, etc.)
 - `data/encryption.key` — Encryption key (loss prevents decryption of encrypted API keys)
 - `data/uploads/` — Uploaded original documents
 - `data/images/` — Knowledge entry images
+
+Backup examples:
+
+```bash
+# Full backup
+askflow backup --output ./backups
+
+# Incremental backup (based on previous full)
+askflow backup --output ./backups --incremental --base ./backups/helpdesk_full_myserver_20260212-143000.manifest.json
+
+# Restore
+askflow restore ./backups/helpdesk_full_myserver_20260212-143000.tar.gz
+```
 
 ---
 

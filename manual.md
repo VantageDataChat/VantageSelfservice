@@ -26,6 +26,8 @@ helpdesk.exe
 ```
 helpdesk                                              启动 HTTP 服务（默认端口 8080）
 helpdesk import [--product <product_id>] <目录> [...]  批量导入目录下的文档到知识库
+helpdesk backup [选项]                                 备份整站数据
+helpdesk restore <备份文件>                             从备份恢复数据
 helpdesk help                                         显示帮助信息
 ```
 
@@ -498,3 +500,103 @@ data/
 └── images/              # 知识条目图片
     └── {hash}.png
 ```
+
+---
+
+## 12. 数据备份与恢复
+
+系统内置命令行备份工具，按数据类型分层备份，支持全量和增量两种模式。
+
+### 12.1 备份文件命名
+
+备份文件自动命名，包含关键信息便于管理：
+
+```
+helpdesk_<模式>_<主机名>_<日期-时间>.tar.gz
+helpdesk_<模式>_<主机名>_<日期-时间>.manifest.json
+```
+
+示例：
+- `helpdesk_full_myserver_20260212-143000.tar.gz` — 全量备份归档
+- `helpdesk_full_myserver_20260212-143000.manifest.json` — 全量备份元数据
+- `helpdesk_incremental_myserver_20260213-020000.tar.gz` — 增量备份归档
+
+### 12.2 全量备份
+
+将完整数据库快照、全部上传文件、配置和加密密钥打包为 tar.gz 归档。
+
+```bash
+# 备份到当前目录
+helpdesk backup
+
+# 备份到指定目录
+helpdesk backup --output ./backups
+```
+
+归档内容：
+- `helpdesk.db` — 完整数据库拷贝
+- `uploads/` — 全部上传文件
+- `config.json` — 系统配置
+- `encryption.key` — AES 加密密钥
+- `manifest.json` — 备份元数据（内嵌在归档中）
+
+### 12.3 增量备份
+
+基于上次备份的 manifest 文件，按数据级别导出变更内容，避免冗余。
+
+```bash
+helpdesk backup --output ./backups --incremental \
+  --base ./backups/helpdesk_full_myserver_20260212-143000.manifest.json
+```
+
+增量备份策略：
+
+| 数据类型 | 备份方式 | 说明 |
+|----------|----------|------|
+| 仅追加表（documents、chunks、video_segments、admin_users） | 按时间增量 | 只导出 `created_at` 晚于上次备份的新行 |
+| 可变表（users、pending_questions、products、admin_user_products） | 全表导出 | 行可能被更新，需完整导出 |
+| 临时表（sessions、email_tokens） | 跳过 | 会话和令牌为临时数据，无需备份 |
+| 上传文件 | 目录级增量 | 只打包上次备份后新增的上传目录 |
+| 配置和密钥 | 每次包含 | 体积小，始终包含 |
+
+增量归档内容：
+- `db_delta.sql` — SQL 增量语句（INSERT OR REPLACE）
+- `uploads/` — 新增的上传文件
+- `config.json` + `encryption.key` — 配置和密钥
+
+### 12.4 恢复
+
+#### 从全量备份恢复
+
+```bash
+# 恢复到默认 data 目录
+helpdesk restore helpdesk_full_myserver_20260212-143000.tar.gz
+
+# 恢复到指定目录
+helpdesk restore --target ./data-new helpdesk_full_myserver_20260212-143000.tar.gz
+```
+
+全量恢复后即可直接启动服务。
+
+#### 应用增量备份
+
+增量恢复需先恢复全量备份，再依次应用增量备份：
+
+```bash
+# 1. 先恢复全量备份
+helpdesk restore helpdesk_full_myserver_20260212-143000.tar.gz
+
+# 2. 解压增量备份（上传文件和配置会自动覆盖）
+helpdesk restore helpdesk_incremental_myserver_20260213-020000.tar.gz
+
+# 3. 应用数据库增量 SQL
+sqlite3 ./data/helpdesk.db < ./data/db_delta.sql
+```
+
+### 12.5 备份策略建议
+
+- 每日执行一次全量备份
+- 每小时或每次重要操作后执行增量备份
+- 保留最近 7 天的全量备份和对应的增量链
+- 将备份文件存储到异地或云存储
+- 定期验证备份可恢复性（恢复到临时目录测试）

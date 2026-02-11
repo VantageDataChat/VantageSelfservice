@@ -55,3 +55,188 @@ func ParseWhisperOutput(jsonData []byte) ([]TranscriptSegment, error) {
 func SerializeTranscript(segments []TranscriptSegment) ([]byte, error) {
 	return json.Marshal(segments)
 }
+
+// Parser 视频解析器，封装 ffmpeg 和 whisper 的调用逻辑
+type Parser struct {
+	FFmpegPath       string
+	WhisperPath      string
+	KeyframeInterval int
+	WhisperModel     string
+}
+
+// NewParser 根据 VideoConfig 创建 Parser 实例
+func NewParser(cfg config.VideoConfig) *Parser {
+	interval := cfg.KeyframeInterval
+	if interval <= 0 {
+		interval = 10
+	}
+	model := cfg.WhisperModel
+	if model == "" {
+		model = "base"
+	}
+	return &Parser{
+		FFmpegPath:       cfg.FFmpegPath,
+		WhisperPath:      cfg.WhisperPath,
+		KeyframeInterval: interval,
+		WhisperModel:     model,
+	}
+}
+
+// CheckDependencies 检测 ffmpeg 和 whisper 是否可用
+func (p *Parser) CheckDependencies() (ffmpegOK bool, whisperOK bool) {
+	if p.FFmpegPath != "" {
+		cmd := exec.Command(p.FFmpegPath, "-version")
+		if err := cmd.Run(); err == nil {
+			ffmpegOK = true
+		}
+	}
+	if p.WhisperPath != "" {
+		// whisper --help is a safe way to check availability
+		cmd := exec.Command(p.WhisperPath, "--help")
+		if err := cmd.Run(); err == nil {
+			whisperOK = true
+		}
+	}
+	return
+}
+
+// ExtractAudio 调用 ffmpeg 将视频的音频轨提取为 16kHz 单声道 WAV 文件
+func (p *Parser) ExtractAudio(videoPath, outputPath string) error {
+	if p.FFmpegPath == "" {
+		return fmt.Errorf("ffmpeg 路径未配置")
+	}
+	cmd := exec.Command(p.FFmpegPath,
+		"-i", videoPath,
+		"-vn",
+		"-acodec", "pcm_s16le",
+		"-ar", "16000",
+		"-ac", "1",
+		outputPath,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ffmpeg 音频提取失败: %s: %w", strings.TrimSpace(string(output)), err)
+	}
+	return nil
+}
+
+// Transcribe 调用 whisper CLI 对音频进行语音转录
+func (p *Parser) Transcribe(audioPath string) ([]TranscriptSegment, error) {
+	if p.WhisperPath == "" {
+		return nil, fmt.Errorf("whisper 路径未配置")
+	}
+
+	tempDir, err := os.MkdirTemp("", "whisper-output-*")
+	if err != nil {
+		return nil, fmt.Errorf("创建临时目录失败: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cmd := exec.Command(p.WhisperPath,
+		audioPath,
+		"--model", p.WhisperModel,
+		"--output_format", "json",
+		"--output_dir", tempDir,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("whisper 转录失败: %s: %w", strings.TrimSpace(string(output)), err)
+	}
+
+	// whisper outputs a JSON file named after the input audio file
+	baseName := strings.TrimSuffix(filepath.Base(audioPath), filepath.Ext(audioPath))
+	jsonPath := filepath.Join(tempDir, baseName+".json")
+
+	jsonData, err := os.ReadFile(jsonPath)
+	if err != nil {
+		return nil, fmt.Errorf("读取 whisper 输出文件失败: %w", err)
+	}
+
+	return ParseWhisperOutput(jsonData)
+}
+
+// ExtractKeyframes 调用 ffmpeg 按 KeyframeInterval 间隔从视频中提取关键帧图像
+func (p *Parser) ExtractKeyframes(videoPath, outputDir string) ([]Keyframe, error) {
+	if p.FFmpegPath == "" {
+		return nil, fmt.Errorf("ffmpeg 路径未配置")
+	}
+
+	outputPattern := filepath.Join(outputDir, "frame_%04d.jpg")
+	cmd := exec.Command(p.FFmpegPath,
+		"-i", videoPath,
+		"-vf", fmt.Sprintf("fps=1/%d", p.KeyframeInterval),
+		"-q:v", "2",
+		outputPattern,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("ffmpeg 关键帧提取失败: %s: %w", strings.TrimSpace(string(output)), err)
+	}
+
+	// Scan output directory for generated frame files
+	entries, err := os.ReadDir(outputDir)
+	if err != nil {
+		return nil, fmt.Errorf("读取关键帧目录失败: %w", err)
+	}
+
+	var frameFiles []string
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), "frame_") && strings.HasSuffix(entry.Name(), ".jpg") {
+			frameFiles = append(frameFiles, entry.Name())
+		}
+	}
+	sort.Strings(frameFiles)
+
+	keyframes := make([]Keyframe, 0, len(frameFiles))
+	for i, name := range frameFiles {
+		keyframes = append(keyframes, Keyframe{
+			Timestamp: float64(i * p.KeyframeInterval),
+			FilePath:  filepath.Join(outputDir, name),
+		})
+	}
+
+	return keyframes, nil
+}
+
+// Parse 编排完整的视频解析流程：提取音频转录 + 抽取关键帧
+func (p *Parser) Parse(videoPath string) (*ParseResult, error) {
+	tempDir, err := os.MkdirTemp("", "video-parse-*")
+	if err != nil {
+		return nil, fmt.Errorf("创建临时目录失败: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	result := &ParseResult{}
+
+	// 音频转录（仅当 whisper 已配置时执行）
+	if p.WhisperPath != "" {
+		audioPath := filepath.Join(tempDir, "audio.wav")
+		audioErr := p.ExtractAudio(videoPath, audioPath)
+		if audioErr != nil {
+			// 如果音频提取失败，可能是视频没有音频轨，跳过转录继续关键帧提取
+			// 不返回错误，仅跳过转录步骤
+		} else {
+			segments, transcribeErr := p.Transcribe(audioPath)
+			if transcribeErr != nil {
+				return nil, transcribeErr
+			}
+			result.Transcript = segments
+		}
+	}
+
+	// 关键帧提取（仅当 ffmpeg 已配置时执行）
+	if p.FFmpegPath != "" {
+		framesDir := filepath.Join(tempDir, "frames")
+		if mkErr := os.MkdirAll(framesDir, 0o755); mkErr != nil {
+			return nil, fmt.Errorf("创建关键帧目录失败: %w", mkErr)
+		}
+		keyframes, kfErr := p.ExtractKeyframes(videoPath, framesDir)
+		if kfErr != nil {
+			return nil, kfErr
+		}
+		result.Keyframes = keyframes
+	}
+
+	return result, nil
+}
+

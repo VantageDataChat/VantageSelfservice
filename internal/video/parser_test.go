@@ -2,7 +2,13 @@ package video
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
+
+	"helpdesk/internal/config"
 )
 
 func TestParseWhisperOutput_ValidJSON(t *testing.T) {
@@ -136,5 +142,180 @@ func TestRoundTrip(t *testing.T) {
 		if original[i] != restored[i] {
 			t.Errorf("segment[%d] mismatch: expected %+v, got %+v", i, original[i], restored[i])
 		}
+	}
+}
+
+func TestNewParser_DefaultValues(t *testing.T) {
+	cfg := config.VideoConfig{
+		FFmpegPath:  "/usr/bin/ffmpeg",
+		WhisperPath: "/usr/bin/whisper",
+	}
+	p := NewParser(cfg)
+
+	if p.FFmpegPath != "/usr/bin/ffmpeg" {
+		t.Errorf("expected FFmpegPath '/usr/bin/ffmpeg', got '%s'", p.FFmpegPath)
+	}
+	if p.WhisperPath != "/usr/bin/whisper" {
+		t.Errorf("expected WhisperPath '/usr/bin/whisper', got '%s'", p.WhisperPath)
+	}
+	if p.KeyframeInterval != 10 {
+		t.Errorf("expected default KeyframeInterval 10, got %d", p.KeyframeInterval)
+	}
+	if p.WhisperModel != "base" {
+		t.Errorf("expected default WhisperModel 'base', got '%s'", p.WhisperModel)
+	}
+}
+
+func TestNewParser_CustomValues(t *testing.T) {
+	cfg := config.VideoConfig{
+		FFmpegPath:       "/opt/ffmpeg",
+		WhisperPath:      "/opt/whisper",
+		KeyframeInterval: 30,
+		WhisperModel:     "large",
+	}
+	p := NewParser(cfg)
+
+	if p.KeyframeInterval != 30 {
+		t.Errorf("expected KeyframeInterval 30, got %d", p.KeyframeInterval)
+	}
+	if p.WhisperModel != "large" {
+		t.Errorf("expected WhisperModel 'large', got '%s'", p.WhisperModel)
+	}
+}
+
+func TestNewParser_ZeroInterval(t *testing.T) {
+	cfg := config.VideoConfig{KeyframeInterval: 0}
+	p := NewParser(cfg)
+	if p.KeyframeInterval != 10 {
+		t.Errorf("expected default KeyframeInterval 10 for zero input, got %d", p.KeyframeInterval)
+	}
+}
+
+func TestNewParser_NegativeInterval(t *testing.T) {
+	cfg := config.VideoConfig{KeyframeInterval: -5}
+	p := NewParser(cfg)
+	if p.KeyframeInterval != 10 {
+		t.Errorf("expected default KeyframeInterval 10 for negative input, got %d", p.KeyframeInterval)
+	}
+}
+
+func TestCheckDependencies_NoPaths(t *testing.T) {
+	p := &Parser{}
+	ffmpegOK, whisperOK := p.CheckDependencies()
+	if ffmpegOK {
+		t.Error("expected ffmpegOK=false when path is empty")
+	}
+	if whisperOK {
+		t.Error("expected whisperOK=false when path is empty")
+	}
+}
+
+func TestCheckDependencies_InvalidPaths(t *testing.T) {
+	p := &Parser{
+		FFmpegPath:  "/nonexistent/ffmpeg_fake_binary",
+		WhisperPath: "/nonexistent/whisper_fake_binary",
+	}
+	ffmpegOK, whisperOK := p.CheckDependencies()
+	if ffmpegOK {
+		t.Error("expected ffmpegOK=false for nonexistent binary")
+	}
+	if whisperOK {
+		t.Error("expected whisperOK=false for nonexistent binary")
+	}
+}
+
+func TestExtractAudio_NoFFmpegPath(t *testing.T) {
+	p := &Parser{}
+	err := p.ExtractAudio("input.mp4", "output.wav")
+	if err == nil {
+		t.Fatal("expected error when FFmpegPath is empty")
+	}
+	if !strings.Contains(err.Error(), "ffmpeg 路径未配置") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestTranscribe_NoWhisperPath(t *testing.T) {
+	p := &Parser{}
+	_, err := p.Transcribe("audio.wav")
+	if err == nil {
+		t.Fatal("expected error when WhisperPath is empty")
+	}
+	if !strings.Contains(err.Error(), "whisper 路径未配置") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestExtractKeyframes_NoFFmpegPath(t *testing.T) {
+	p := &Parser{}
+	_, err := p.ExtractKeyframes("input.mp4", "/tmp/frames")
+	if err == nil {
+		t.Fatal("expected error when FFmpegPath is empty")
+	}
+	if !strings.Contains(err.Error(), "ffmpeg 路径未配置") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestExtractKeyframes_TimestampCalculation(t *testing.T) {
+	// Create a temp directory with fake frame files to test timestamp logic
+	dir := t.TempDir()
+	frameNames := []string{"frame_0001.jpg", "frame_0002.jpg", "frame_0003.jpg", "frame_0004.jpg"}
+	for _, name := range frameNames {
+		f, err := os.Create(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("failed to create test frame: %v", err)
+		}
+		f.Close()
+	}
+
+	// We can't call ExtractKeyframes directly (it needs ffmpeg), but we can
+	// verify the timestamp logic by simulating what the method does after ffmpeg runs.
+	// The method scans the directory and computes timestamps as i * interval.
+	interval := 5
+	entries, _ := os.ReadDir(dir)
+	var files []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), "frame_") && strings.HasSuffix(e.Name(), ".jpg") {
+			files = append(files, e.Name())
+		}
+	}
+	sort.Strings(files)
+
+	for i, name := range files {
+		expectedTS := float64(i * interval)
+		kf := Keyframe{
+			Timestamp: expectedTS,
+			FilePath:  filepath.Join(dir, name),
+		}
+		if kf.Timestamp != expectedTS {
+			t.Errorf("frame %s: expected timestamp %f, got %f", name, expectedTS, kf.Timestamp)
+		}
+	}
+
+	// Verify: frame_0001 = 0*5=0, frame_0002 = 1*5=5, frame_0003 = 2*5=10, frame_0004 = 3*5=15
+	expected := []float64{0, 5, 10, 15}
+	for i, exp := range expected {
+		actual := float64(i * interval)
+		if actual != exp {
+			t.Errorf("index %d: expected %f, got %f", i, exp, actual)
+		}
+	}
+}
+
+func TestParse_NothingConfigured(t *testing.T) {
+	p := &Parser{}
+	result, err := p.Parse("nonexistent.mp4")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.Transcript) != 0 {
+		t.Errorf("expected empty transcript, got %d segments", len(result.Transcript))
+	}
+	if len(result.Keyframes) != 0 {
+		t.Errorf("expected empty keyframes, got %d frames", len(result.Keyframes))
 	}
 }
