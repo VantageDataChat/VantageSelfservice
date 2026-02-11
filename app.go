@@ -1,0 +1,492 @@
+// Package main provides the App struct that serves as the API facade
+// for the helpdesk system, delegating to internal service components.
+package main
+
+import (
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
+	"fmt"
+	"strings"
+	"time"
+
+	"helpdesk/internal/auth"
+	"helpdesk/internal/config"
+	"helpdesk/internal/document"
+	"helpdesk/internal/email"
+	"helpdesk/internal/pending"
+	"helpdesk/internal/query"
+)
+
+// App is the API facade that binds all backend services for the frontend.
+// Each public method delegates to the appropriate service component.
+type App struct {
+	db             *sql.DB
+	queryEngine    *query.QueryEngine
+	docManager     *document.DocumentManager
+	pendingManager *pending.PendingQuestionManager
+	oauthClient    *auth.OAuthClient
+	sessionManager *auth.SessionManager
+	configManager  *config.ConfigManager
+	emailService   *email.Service
+}
+
+// NewApp creates a new App with all service dependencies injected.
+func NewApp(
+	db *sql.DB,
+	qe *query.QueryEngine,
+	dm *document.DocumentManager,
+	pm *pending.PendingQuestionManager,
+	oc *auth.OAuthClient,
+	sm *auth.SessionManager,
+	cm *config.ConfigManager,
+	es *email.Service,
+) *App {
+	return &App{
+		db:             db,
+		queryEngine:    qe,
+		docManager:     dm,
+		pendingManager: pm,
+		oauthClient:    oc,
+		sessionManager: sm,
+		configManager:  cm,
+		emailService:   es,
+	}
+}
+
+// --- Query Interface ---
+
+// Query processes a user question through the RAG pipeline.
+func (a *App) Query(question string) (*query.QueryResponse, error) {
+	return a.queryEngine.Query(query.QueryRequest{
+		Question: question,
+		UserID:   "", // UserID can be set by the caller via session context
+	})
+}
+
+// --- Document Management Interface ---
+
+// UploadFile uploads and processes a document file.
+func (a *App) UploadFile(req document.UploadFileRequest) (*document.DocumentInfo, error) {
+	return a.docManager.UploadFile(req)
+}
+
+// UploadURL fetches and processes content from a URL.
+func (a *App) UploadURL(req document.UploadURLRequest) (*document.DocumentInfo, error) {
+	return a.docManager.UploadURL(req)
+}
+
+// ListDocuments returns all uploaded documents.
+func (a *App) ListDocuments() ([]document.DocumentInfo, error) {
+	return a.docManager.ListDocuments()
+}
+
+// DeleteDocument removes a document and its associated vectors.
+func (a *App) DeleteDocument(docID string) error {
+	return a.docManager.DeleteDocument(docID)
+}
+
+// --- Pending Questions Interface ---
+
+// ListPendingQuestions returns pending questions filtered by status.
+// Pass an empty string to list all questions.
+func (a *App) ListPendingQuestions(status string) ([]pending.PendingQuestion, error) {
+	return a.pendingManager.ListPending(status)
+}
+
+// AnswerQuestion submits an admin answer to a pending question.
+func (a *App) AnswerQuestion(req pending.AdminAnswerRequest) error {
+	return a.pendingManager.AnswerQuestion(req)
+}
+
+// --- Authentication Interface ---
+
+// GetOAuthURL returns the OAuth authorization URL for the given provider.
+func (a *App) GetOAuthURL(provider string) (string, error) {
+	return a.oauthClient.GetAuthURL(provider)
+}
+
+// OAuthCallbackResponse contains the result of an OAuth callback.
+type OAuthCallbackResponse struct {
+	User    *auth.OAuthUser `json:"user"`
+	Session *auth.Session   `json:"session"`
+}
+
+// HandleOAuthCallback exchanges the auth code for user info and creates a session.
+func (a *App) HandleOAuthCallback(provider, code string) (*OAuthCallbackResponse, error) {
+	user, err := a.oauthClient.HandleCallback(provider, code)
+	if err != nil {
+		return nil, err
+	}
+
+	session, err := a.sessionManager.CreateSession(user.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &OAuthCallbackResponse{
+		User:    user,
+		Session: session,
+	}, nil
+}
+
+// AdminLoginResponse contains the session created after admin login.
+type AdminLoginResponse struct {
+	Session *auth.Session `json:"session"`
+}
+
+// IsAdminConfigured returns whether the admin account has been set up.
+func (a *App) IsAdminConfigured() bool {
+	cfg := a.configManager.Get()
+	return cfg.Admin.Username != "" && cfg.Admin.PasswordHash != ""
+}
+
+// AdminSetup sets the admin username and password for the first time.
+// Returns an error if admin is already configured.
+func (a *App) AdminSetup(username, password string) (*AdminLoginResponse, error) {
+	if a.IsAdminConfigured() {
+		return nil, fmt.Errorf("管理员账号已设置")
+	}
+	if strings.TrimSpace(username) == "" || strings.TrimSpace(password) == "" {
+		return nil, fmt.Errorf("用户名和密码不能为空")
+	}
+
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		return nil, err
+	}
+
+	err = a.configManager.Update(map[string]interface{}{
+		"admin.username":      username,
+		"admin.password_hash": hash,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if err := a.ensureAdminUser(); err != nil {
+		return nil, err
+	}
+
+	session, err := a.sessionManager.CreateSession("admin")
+	if err != nil {
+		return nil, err
+	}
+
+	return &AdminLoginResponse{Session: session}, nil
+}
+
+// AdminLogin verifies the admin username and password and creates a session.
+func (a *App) AdminLogin(username, password string) (*AdminLoginResponse, error) {
+	cfg := a.configManager.Get()
+	if cfg.Admin.Username == "" || cfg.Admin.PasswordHash == "" {
+		return nil, fmt.Errorf("管理员账号未设置")
+	}
+	if username != cfg.Admin.Username {
+		return nil, fmt.Errorf("用户名或密码错误")
+	}
+	if err := auth.VerifyAdminPassword(password, cfg.Admin.PasswordHash); err != nil {
+		return nil, fmt.Errorf("用户名或密码错误")
+	}
+
+	if err := a.ensureAdminUser(); err != nil {
+		return nil, err
+	}
+
+	session, err := a.sessionManager.CreateSession("admin")
+	if err != nil {
+		return nil, err
+	}
+
+	return &AdminLoginResponse{
+		Session: session,
+	}, nil
+}
+
+// ensureAdminUser inserts the admin user record into the users table if it doesn't exist.
+func (a *App) ensureAdminUser() error {
+	_, err := a.db.Exec(
+		`INSERT OR IGNORE INTO users (id, email, name, provider, provider_id) VALUES (?, ?, ?, ?, ?)`,
+		"admin", "", "管理员", "local", "admin",
+	)
+	if err != nil {
+		return fmt.Errorf("ensure admin user: %w", err)
+	}
+	return nil
+}
+
+// --- User Registration Interface ---
+
+// RegisterRequest holds user registration data.
+type RegisterRequest struct {
+	Email    string `json:"email"`
+	Name     string `json:"name"`
+	Password string `json:"password"`
+}
+
+// Register creates a new user account and sends a verification email.
+func (a *App) Register(req RegisterRequest, baseURL string) error {
+	email := strings.TrimSpace(req.Email)
+	name := strings.TrimSpace(req.Name)
+	password := req.Password
+
+	if email == "" || password == "" {
+		return fmt.Errorf("邮箱和密码不能为空")
+	}
+	if len(password) < 6 {
+		return fmt.Errorf("密码至少6位")
+	}
+	if name == "" {
+		name = email
+	}
+
+	// Check if email already exists
+	var existingID string
+	err := a.db.QueryRow("SELECT id FROM users WHERE email = ?", email).Scan(&existingID)
+	if err == nil {
+		return fmt.Errorf("该邮箱已注册")
+	}
+	if err != sql.ErrNoRows {
+		return fmt.Errorf("查询用户失败: %w", err)
+	}
+
+	// Hash password
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		return err
+	}
+
+	// Generate user ID
+	userID, err := generateToken()
+	if err != nil {
+		return err
+	}
+
+	// Insert user (unverified)
+	_, err = a.db.Exec(
+		`INSERT INTO users (id, email, name, provider, provider_id, password_hash, email_verified) VALUES (?, ?, ?, ?, ?, ?, 0)`,
+		userID, email, name, "local", email, hash,
+	)
+	if err != nil {
+		return fmt.Errorf("创建用户失败: %w", err)
+	}
+
+	// Generate verification token
+	token, err := generateToken()
+	if err != nil {
+		return err
+	}
+	expiresAt := time.Now().UTC().Add(24 * time.Hour)
+	_, err = a.db.Exec(
+		`INSERT INTO email_tokens (id, user_id, token, type, expires_at) VALUES (?, ?, ?, 'verify', ?)`,
+		token, userID, token, expiresAt.Format(time.RFC3339),
+	)
+	if err != nil {
+		return fmt.Errorf("创建验证令牌失败: %w", err)
+	}
+
+	// Send verification email
+	verifyURL := strings.TrimRight(baseURL, "/") + "/verify?token=" + token
+	if err := a.emailService.SendVerification(email, name, verifyURL); err != nil {
+		return fmt.Errorf("发送验证邮件失败: %w", err)
+	}
+
+	return nil
+}
+
+// VerifyEmail verifies a user's email using the token.
+func (a *App) VerifyEmail(token string) error {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return fmt.Errorf("无效的验证链接")
+	}
+
+	var userID, expiresAtStr string
+	err := a.db.QueryRow(
+		`SELECT user_id, expires_at FROM email_tokens WHERE token = ? AND type = 'verify'`, token,
+	).Scan(&userID, &expiresAtStr)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("验证链接无效或已过期")
+	}
+	if err != nil {
+		return fmt.Errorf("查询验证令牌失败: %w", err)
+	}
+
+	expiresAt, err := time.Parse(time.RFC3339, expiresAtStr)
+	if err != nil {
+		expiresAt, _ = time.Parse("2006-01-02T15:04:05Z", expiresAtStr)
+	}
+	if time.Now().UTC().After(expiresAt) {
+		return fmt.Errorf("验证链接已过期，请重新注册")
+	}
+
+	// Mark email as verified
+	_, err = a.db.Exec(`UPDATE users SET email_verified = 1 WHERE id = ?`, userID)
+	if err != nil {
+		return fmt.Errorf("验证失败: %w", err)
+	}
+
+	// Delete used token
+	a.db.Exec(`DELETE FROM email_tokens WHERE token = ?`, token)
+
+	return nil
+}
+
+// UserLoginResponse contains the session and user info after login.
+type UserLoginResponse struct {
+	Session *auth.Session `json:"session"`
+	User    *UserInfo     `json:"user"`
+}
+
+// UserInfo holds basic user info for the frontend.
+type UserInfo struct {
+	ID       string `json:"id"`
+	Email    string `json:"email"`
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+}
+
+// UserLogin authenticates a user with email and password.
+func (a *App) UserLogin(email, password string) (*UserLoginResponse, error) {
+	email = strings.TrimSpace(email)
+	if email == "" || password == "" {
+		return nil, fmt.Errorf("邮箱和密码不能为空")
+	}
+
+	var userID, name, passwordHash string
+	var emailVerified int
+	err := a.db.QueryRow(
+		`SELECT id, name, password_hash, email_verified FROM users WHERE email = ? AND provider = 'local'`,
+		email,
+	).Scan(&userID, &name, &passwordHash, &emailVerified)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("邮箱或密码错误")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("查询用户失败: %w", err)
+	}
+
+	if emailVerified == 0 {
+		return nil, fmt.Errorf("邮箱未验证，请先查收验证邮件")
+	}
+
+	if err := auth.VerifyAdminPassword(password, passwordHash); err != nil {
+		return nil, fmt.Errorf("邮箱或密码错误")
+	}
+
+	// Update last login
+	a.db.Exec(`UPDATE users SET last_login = ? WHERE id = ?`, time.Now().UTC().Format(time.RFC3339), userID)
+
+	session, err := a.sessionManager.CreateSession(userID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &UserLoginResponse{
+		Session: session,
+		User: &UserInfo{
+			ID:       userID,
+			Email:    email,
+			Name:     name,
+			Provider: "local",
+		},
+	}, nil
+}
+
+func generateToken() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate token: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// TestEmail sends a test email to verify SMTP configuration.
+func (a *App) TestEmail(toEmail string) error {
+	toEmail = strings.TrimSpace(toEmail)
+	if toEmail == "" {
+		return fmt.Errorf("请输入收件人邮箱")
+	}
+	return a.emailService.SendTest(toEmail)
+}
+
+// --- Configuration Interface ---
+
+// MaskedConfig is a copy of Config with API keys replaced by "***".
+type MaskedConfig struct {
+	LLM       config.LLMConfig       `json:"llm"`
+	Embedding config.EmbeddingConfig `json:"embedding"`
+	Vector    config.VectorConfig    `json:"vector"`
+	OAuth     MaskedOAuthConfig      `json:"oauth"`
+	Admin     config.AdminConfig     `json:"admin"`
+	SMTP      config.SMTPConfig      `json:"smtp"`
+}
+
+// MaskedOAuthConfig holds OAuth config with secrets masked.
+type MaskedOAuthConfig struct {
+	Providers map[string]MaskedOAuthProvider `json:"providers"`
+}
+
+// MaskedOAuthProvider holds a single provider config with the secret masked.
+type MaskedOAuthProvider struct {
+	ClientID     string   `json:"client_id"`
+	ClientSecret string   `json:"client_secret"`
+	AuthURL      string   `json:"auth_url"`
+	TokenURL     string   `json:"token_url"`
+	RedirectURL  string   `json:"redirect_url"`
+	Scopes       []string `json:"scopes"`
+}
+
+// GetConfig returns the current configuration with API keys masked.
+func (a *App) GetConfig() *MaskedConfig {
+	cfg := a.configManager.Get()
+	if cfg == nil {
+		return nil
+	}
+
+	masked := &MaskedConfig{
+		LLM:       cfg.LLM,
+		Embedding: cfg.Embedding,
+		Vector:    cfg.Vector,
+		Admin:     cfg.Admin,
+		SMTP:      cfg.SMTP,
+	}
+
+	// Mask API keys
+	masked.LLM.APIKey = maskSecret(cfg.LLM.APIKey)
+	masked.Embedding.APIKey = maskSecret(cfg.Embedding.APIKey)
+
+	// Mask OAuth secrets
+	masked.OAuth.Providers = make(map[string]MaskedOAuthProvider, len(cfg.OAuth.Providers))
+	for name, p := range cfg.OAuth.Providers {
+		masked.OAuth.Providers[name] = MaskedOAuthProvider{
+			ClientID:     p.ClientID,
+			ClientSecret: maskSecret(p.ClientSecret),
+			AuthURL:      p.AuthURL,
+			TokenURL:     p.TokenURL,
+			RedirectURL:  p.RedirectURL,
+			Scopes:       p.Scopes,
+		}
+	}
+
+	// Mask admin password hash
+	masked.Admin.PasswordHash = maskSecret(cfg.Admin.PasswordHash)
+
+	// Mask SMTP password
+	masked.SMTP.Password = maskSecret(cfg.SMTP.Password)
+
+	return masked
+}
+
+// UpdateConfig applies partial configuration updates.
+func (a *App) UpdateConfig(updates map[string]interface{}) error {
+	return a.configManager.Update(updates)
+}
+
+// maskSecret replaces a non-empty secret with "***".
+func maskSecret(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return ""
+	}
+	return "***"
+}
