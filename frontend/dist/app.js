@@ -10,6 +10,7 @@
     var adminLoginRoute = '/admin'; // default, will be fetched from server
     var loginCaptchaId = '';
     var registerCaptchaId = '';
+    var adminCaptchaId = '';
 
     // --- Routing ---
 
@@ -41,6 +42,9 @@
         var session = getSession();
         var user = getUser();
         var isAdmin = session && user && user.provider === 'admin';
+
+        // OAuth callback is handled in init(), skip routing
+        if (route === '/oauth/callback') return;
 
         if (route === adminLoginRoute) {
             if (isAdmin) {
@@ -173,6 +177,20 @@
 
     window.loadRegisterCaptcha = function () {
         loadCaptcha('user-register-captcha-question', 'register');
+    };
+
+    window.loadAdminCaptcha = function () {
+        fetch('/api/captcha/image')
+            .then(function (res) { return res.json(); })
+            .then(function (data) {
+                var img = document.getElementById('admin-login-captcha-img');
+                if (img) img.src = data.image;
+                adminCaptchaId = data.id;
+            })
+            .catch(function () {
+                var img = document.getElementById('admin-login-captcha-img');
+                if (img) img.alt = i18n.t('captcha_load_fail');
+            });
     };
 
     // --- User Login & Register ---
@@ -343,6 +361,7 @@
                     if (setupForm) setupForm.classList.add('hidden');
                     var input = document.getElementById('admin-username');
                     if (input) input.focus();
+                    loadAdminCaptcha();
                 } else {
                     if (loginForm) loginForm.classList.add('hidden');
                     if (setupForm) setupForm.classList.remove('hidden');
@@ -353,6 +372,7 @@
             .catch(function () {
                 var loginForm = document.getElementById('admin-login-form');
                 if (loginForm) loginForm.classList.remove('hidden');
+                loadAdminCaptcha();
             });
     }
 
@@ -418,6 +438,7 @@
     window.handleAdminLogin = function () {
         var usernameInput = document.getElementById('admin-username');
         var input = document.getElementById('admin-password');
+        var captchaInput = document.getElementById('admin-login-captcha');
         var errorEl = document.getElementById('admin-login-error');
         var submitBtn = document.querySelector('#admin-login-form .admin-submit-btn');
 
@@ -425,9 +446,18 @@
 
         var username = usernameInput.value.trim();
         var password = input.value.trim();
+        var captchaAnswer = captchaInput ? captchaInput.value.trim() : '';
+
         if (!username || !password) {
             if (errorEl) {
                 errorEl.textContent = i18n.t('admin_error_credentials');
+                errorEl.classList.remove('hidden');
+            }
+            return;
+        }
+        if (!captchaAnswer) {
+            if (errorEl) {
+                errorEl.textContent = i18n.t('admin_error_captcha');
                 errorEl.classList.remove('hidden');
             }
             return;
@@ -439,14 +469,11 @@
         fetch('/api/admin/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: username, password: password })
+            body: JSON.stringify({ username: username, password: password, captcha_id: adminCaptchaId, captcha_answer: captchaAnswer })
         })
             .then(function (res) {
                 if (!res.ok) {
-                    if (res.status === 401 || res.status === 403) {
-                        throw new Error(i18n.t('admin_error_wrong_credentials'));
-                    }
-                    throw new Error(i18n.t('admin_login_failed'));
+                    return res.json().then(function (d) { throw new Error(d.error || i18n.t('admin_login_failed')); });
                 }
                 return res.json();
             })
@@ -465,6 +492,8 @@
                     errorEl.classList.remove('hidden');
                 }
                 input.value = '';
+                if (captchaInput) captchaInput.value = '';
+                loadAdminCaptcha();
                 input.focus();
             })
             .finally(function () {
@@ -476,7 +505,7 @@
     document.addEventListener('keydown', function (e) {
         if (e.key === 'Enter') {
             var el = document.activeElement;
-            if (el && (el.id === 'admin-username' || el.id === 'admin-password')) {
+            if (el && (el.id === 'admin-username' || el.id === 'admin-password' || el.id === 'admin-login-captcha')) {
                 window.handleAdminLogin();
             }
             if (el && (el.id === 'admin-setup-username' || el.id === 'admin-setup-password' || el.id === 'admin-setup-password-confirm')) {
@@ -708,7 +737,58 @@
             html += '</ul></div>';
         }
 
+        // Debug info (when debug mode is enabled)
+        if (msg.debugInfo) {
+            var dbgId = 'debug-' + msg.timestamp;
+            html += '<div class="chat-sources">';
+            html += '<button class="chat-sources-toggle" onclick="toggleSources(\'' + dbgId + '\', this)">';
+            html += '<span class="arrow">▶</span> 🔍 ' + i18n.t('chat_debug_toggle');
+            html += '</button>';
+            html += '<div id="' + dbgId + '" class="chat-sources-list chat-debug-info" style="font-size:12px;font-family:monospace;">';
+            var di = msg.debugInfo;
+            html += '<div><b>Intent:</b> ' + escapeHtml(di.intent || '-') + '</div>';
+            html += '<div><b>Vector Dim:</b> ' + (di.vector_dim || 0) + '</div>';
+            html += '<div><b>TopK:</b> ' + (di.top_k || 0) + ' | <b>Threshold:</b> ' + (di.threshold || 0) + '</div>';
+            html += '<div><b>Results:</b> ' + (di.result_count || 0) + '</div>';
+            if (di.relaxed_search) {
+                html += '<div><b>Relaxed Search:</b> Yes</div>';
+            }
+            if (di.top_results && di.top_results.length > 0) {
+                html += '<div><b>Top Hits:</b></div><ul style="margin:2px 0 2px 16px;">';
+                for (var ti = 0; ti < di.top_results.length; ti++) {
+                    var tr = di.top_results[ti];
+                    html += '<li>' + escapeHtml(tr.doc_name) + ' (score=' + tr.score.toFixed(4) + ')</li>';
+                }
+                html += '</ul>';
+            }
+            if (di.relaxed_results && di.relaxed_results.length > 0) {
+                html += '<div><b>Relaxed Hits:</b></div><ul style="margin:2px 0 2px 16px;">';
+                for (var ri = 0; ri < di.relaxed_results.length; ri++) {
+                    var rr = di.relaxed_results[ri];
+                    html += '<li>' + escapeHtml(rr.doc_name) + ' (score=' + rr.score.toFixed(4) + ')</li>';
+                }
+                html += '</ul>';
+            }
+            if (di.llm_unable_answer) {
+                html += '<div style="color:#e67e22;"><b>LLM Unable to Answer:</b> Yes</div>';
+            }
+            if (di.steps && di.steps.length > 0) {
+                html += '<div><b>Pipeline Steps:</b></div><ol style="margin:2px 0 2px 16px;">';
+                for (var si = 0; si < di.steps.length; si++) {
+                    html += '<li>' + escapeHtml(di.steps[si]) + '</li>';
+                }
+                html += '</ol>';
+            }
+            html += '</div></div>';
+        }
+
         html += '<span class="chat-msg-time">' + timeStr + '</span>';
+
+        // Add "Not Satisfied" button for non-pending system answers
+        if (!msg.isPending && msg.content) {
+            html += '<button class="chat-not-satisfied-btn" onclick="window.handleNotSatisfied(this, ' + i + ')">' + i18n.t('chat_not_satisfied') + '</button>';
+        }
+
         html += '</div>';
         return html;
     }
@@ -755,6 +835,78 @@
         if (!list) return;
         list.classList.toggle('open');
         if (btn) btn.classList.toggle('open');
+    };
+
+    window.handleNotSatisfied = function (btn, msgIndex) {
+        // Find the corresponding user question (the message before this system answer)
+        var userMsg = null;
+        for (var i = msgIndex - 1; i >= 0; i--) {
+            if (chatMessages[i].role === 'user') {
+                userMsg = chatMessages[i];
+                break;
+            }
+        }
+        if (!userMsg) return;
+
+        // Show confirmation dialog
+        var overlay = document.createElement('div');
+        overlay.className = 'chat-confirm-overlay';
+        overlay.innerHTML =
+            '<div class="chat-confirm-dialog">' +
+                '<p>' + i18n.t('chat_not_satisfied_confirm') + '</p>' +
+                '<div class="chat-confirm-actions">' +
+                    '<button class="chat-confirm-yes">' + i18n.t('chat_not_satisfied_confirm_yes') + '</button>' +
+                    '<button class="chat-confirm-no">' + i18n.t('chat_not_satisfied_confirm_no') + '</button>' +
+                '</div>' +
+            '</div>';
+        document.body.appendChild(overlay);
+
+        overlay.querySelector('.chat-confirm-no').onclick = function () {
+            document.body.removeChild(overlay);
+        };
+        overlay.querySelector('.chat-confirm-yes').onclick = function () {
+            document.body.removeChild(overlay);
+            btn.disabled = true;
+            btn.textContent = '...';
+
+            var token = getChatToken();
+            var reqBody = {
+                question: userMsg.content,
+                user_id: getChatUserID()
+            };
+            if (userMsg.imageUrl) {
+                reqBody.image_data = userMsg.imageUrl;
+            }
+
+            fetch('/api/pending/create', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer ' + token
+                },
+                body: JSON.stringify(reqBody)
+            })
+            .then(function (res) {
+                if (!res.ok) throw new Error('failed');
+                return res.json();
+            })
+            .then(function () {
+                // Replace the answer message with a success message
+                chatMessages[msgIndex] = {
+                    role: 'system',
+                    content: i18n.t('chat_not_satisfied_success'),
+                    sources: [],
+                    isPending: true,
+                    timestamp: Date.now()
+                };
+                renderChatMessages();
+            })
+            .catch(function () {
+                btn.disabled = false;
+                btn.textContent = i18n.t('chat_not_satisfied');
+                alert(i18n.t('chat_not_satisfied_fail'));
+            });
+        };
     };
 
     // Helper: add/remove progress overlay on an element
@@ -850,6 +1002,7 @@
                 content: data.answer || data.message || i18n.t('chat_no_answer'),
                 sources: data.sources || [],
                 isPending: !!data.is_pending,
+                debugInfo: data.debug_info || null,
                 timestamp: Date.now()
             };
             if (data.is_pending) {
@@ -1512,6 +1665,10 @@
                 setVal('cfg-vec-threshold', vec.threshold);
                 var cpSelect = document.getElementById('cfg-vec-content-priority');
                 if (cpSelect) cpSelect.value = vec.content_priority || 'image_text';
+                var tmSelect = document.getElementById('cfg-vec-text-match');
+                if (tmSelect) tmSelect.value = vec.text_match_enabled === false ? 'false' : 'true';
+                var dbgSelect = document.getElementById('cfg-vec-debug-mode');
+                if (dbgSelect) dbgSelect.value = vec.debug_mode ? 'true' : 'false';
 
                 setVal('cfg-admin-login-route', admin.login_route || '/admin');
 
@@ -1528,6 +1685,9 @@
                 setVal('cfg-smtp-from-name', smtp.from_name);
                 var tlsSelect = document.getElementById('cfg-smtp-tls');
                 if (tlsSelect) tlsSelect.value = smtp.use_tls === false ? 'false' : 'true';
+
+                // Load OAuth providers
+                renderOAuthProviderSettings(cfg.oauth || {});
             })
             .catch(function () {
                 showAdminToast(i18n.t('admin_settings_load_failed'), 'error');
@@ -1640,6 +1800,10 @@
         if (vecThreshold !== '') updates['vector.threshold'] = parseFloat(vecThreshold);
         var vecContentPriority = getVal('cfg-vec-content-priority');
         if (vecContentPriority) updates['vector.content_priority'] = vecContentPriority;
+        var vecTextMatch = getVal('cfg-vec-text-match');
+        updates['vector.text_match_enabled'] = vecTextMatch === 'true';
+        var vecDebugMode = getVal('cfg-vec-debug-mode');
+        updates['vector.debug_mode'] = vecDebugMode === 'true';
 
         var adminLoginRouteVal = getVal('cfg-admin-login-route');
         if (adminLoginRouteVal) {
@@ -1668,6 +1832,25 @@
         if (smtpFromName) updates['smtp.from_name'] = smtpFromName;
         updates['smtp.use_tls'] = smtpTls === 'true';
 
+        // Collect OAuth provider settings
+        var oauthCards = document.querySelectorAll('.oauth-provider-card');
+        oauthCards.forEach(function (card) {
+            var pName = card.getAttribute('data-provider');
+            if (!pName) return;
+            var cid = getVal('oauth-' + pName + '-client-id');
+            var csecret = getVal('oauth-' + pName + '-client-secret');
+            var aurl = getVal('oauth-' + pName + '-auth-url');
+            var turl = getVal('oauth-' + pName + '-token-url');
+            var rurl = getVal('oauth-' + pName + '-redirect-url');
+            var scopes = getVal('oauth-' + pName + '-scopes');
+            if (cid) updates['oauth.providers.' + pName + '.client_id'] = cid;
+            if (csecret) updates['oauth.providers.' + pName + '.client_secret'] = csecret;
+            if (aurl) updates['oauth.providers.' + pName + '.auth_url'] = aurl;
+            if (turl) updates['oauth.providers.' + pName + '.token_url'] = turl;
+            if (rurl) updates['oauth.providers.' + pName + '.redirect_url'] = rurl;
+            if (scopes) updates['oauth.providers.' + pName + '.scopes'] = scopes;
+        });
+
         if (Object.keys(updates).length === 0) {
             showAdminToast(i18n.t('admin_settings_no_changes'), 'info');
             return;
@@ -1687,6 +1870,228 @@
             showAdminToast(err.message || i18n.t('admin_settings_save_failed'), 'error');
         });
     };
+
+    // --- OAuth Admin Settings ---
+
+    var oauthDefaultConfigs = {
+        google: {
+            auth_url: 'https://accounts.google.com/o/oauth2/v2/auth',
+            token_url: 'https://oauth2.googleapis.com/token',
+            scopes: 'openid,email,profile'
+        },
+        apple: {
+            auth_url: 'https://appleid.apple.com/auth/authorize',
+            token_url: 'https://appleid.apple.com/auth/token',
+            scopes: 'name,email'
+        },
+        amazon: {
+            auth_url: 'https://www.amazon.com/ap/oa',
+            token_url: 'https://api.amazon.com/auth/o2/token',
+            scopes: 'profile'
+        },
+        facebook: {
+            auth_url: 'https://www.facebook.com/v18.0/dialog/oauth',
+            token_url: 'https://graph.facebook.com/v18.0/oauth/access_token',
+            scopes: 'email,public_profile'
+        }
+    };
+
+    var oauthProviderLabels = {
+        google: 'Google',
+        apple: 'Apple',
+        amazon: 'Amazon',
+        facebook: 'Facebook'
+    };
+
+    function renderOAuthProviderSettings(oauthCfg) {
+        var container = document.getElementById('oauth-providers-list');
+        if (!container) return;
+        container.innerHTML = '';
+        var providers = (oauthCfg && oauthCfg.providers) ? oauthCfg.providers : {};
+        var names = Object.keys(providers);
+        if (names.length === 0) {
+            container.innerHTML = '<p class="admin-table-empty" data-i18n="admin_settings_oauth_empty">' + i18n.t('admin_settings_oauth_empty') + '</p>';
+            return;
+        }
+        names.forEach(function (name) {
+            var p = providers[name];
+            var label = oauthProviderLabels[name] || name;
+            var isConfigured = p.client_id && p.client_secret && p.auth_url && p.token_url;
+            var statusClass = isConfigured ? 'oauth-status-ok' : 'oauth-status-incomplete';
+            var statusText = isConfigured ? i18n.t('admin_settings_oauth_status_ok') : i18n.t('admin_settings_oauth_status_incomplete');
+
+            var card = document.createElement('div');
+            card.className = 'oauth-provider-card';
+            card.setAttribute('data-provider', name);
+            card.innerHTML =
+                '<div class="oauth-provider-header">' +
+                    '<span class="oauth-provider-name">' + label + '</span>' +
+                    '<span class="oauth-status ' + statusClass + '">' + statusText + '</span>' +
+                    '<button class="btn-danger btn-sm" onclick="removeOAuthProvider(\'' + name + '\')">' + i18n.t('admin_settings_oauth_remove') + '</button>' +
+                '</div>' +
+                '<div class="oauth-provider-fields">' +
+                    '<div class="admin-form-row"><label>Client ID</label><input type="text" id="oauth-' + name + '-client-id" value="' + escapeAttr(p.client_id || '') + '" placeholder="Client ID"></div>' +
+                    '<div class="admin-form-row"><label>Client Secret</label><input type="password" id="oauth-' + name + '-client-secret" value="" placeholder="' + (p.client_secret ? '***' : 'Client Secret') + '"></div>' +
+                    '<div class="admin-form-row"><label>Auth URL</label><input type="text" id="oauth-' + name + '-auth-url" value="' + escapeAttr(p.auth_url || '') + '" placeholder="Authorization URL"></div>' +
+                    '<div class="admin-form-row"><label>Token URL</label><input type="text" id="oauth-' + name + '-token-url" value="' + escapeAttr(p.token_url || '') + '" placeholder="Token URL"></div>' +
+                    '<div class="admin-form-row"><label>Redirect URL</label><input type="text" id="oauth-' + name + '-redirect-url" value="' + escapeAttr(p.redirect_url || '') + '" placeholder="' + window.location.origin + '/oauth/callback"></div>' +
+                    '<div class="admin-form-row"><label>Scopes</label><input type="text" id="oauth-' + name + '-scopes" value="' + escapeAttr((p.scopes || []).join(',')) + '" placeholder="openid,email,profile"></div>' +
+                '</div>';
+            container.appendChild(card);
+        });
+    }
+
+    function escapeAttr(s) {
+        return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    window.addOAuthProviderForm = function () {
+        var select = document.getElementById('oauth-add-provider-select');
+        if (!select) return;
+        var name = select.value;
+        // Check if already exists
+        if (document.querySelector('.oauth-provider-card[data-provider="' + name + '"]')) {
+            showAdminToast(i18n.t('admin_settings_oauth_exists'), 'info');
+            return;
+        }
+        var defaults = oauthDefaultConfigs[name] || {};
+        var fakeOAuth = { providers: {} };
+        fakeOAuth.providers[name] = {
+            client_id: '',
+            client_secret: '',
+            auth_url: defaults.auth_url || '',
+            token_url: defaults.token_url || '',
+            redirect_url: window.location.origin + '/oauth/callback',
+            scopes: (defaults.scopes || '').split(',')
+        };
+        // Append to existing
+        var container = document.getElementById('oauth-providers-list');
+        var emptyMsg = container.querySelector('.admin-table-empty');
+        if (emptyMsg) emptyMsg.remove();
+        var tempDiv = document.createElement('div');
+        tempDiv.innerHTML = '';
+        var p = fakeOAuth.providers[name];
+        var label = oauthProviderLabels[name] || name;
+        var card = document.createElement('div');
+        card.className = 'oauth-provider-card';
+        card.setAttribute('data-provider', name);
+        card.innerHTML =
+            '<div class="oauth-provider-header">' +
+                '<span class="oauth-provider-name">' + label + '</span>' +
+                '<span class="oauth-status oauth-status-incomplete">' + i18n.t('admin_settings_oauth_status_incomplete') + '</span>' +
+                '<button class="btn-danger btn-sm" onclick="removeOAuthProvider(\'' + name + '\')">' + i18n.t('admin_settings_oauth_remove') + '</button>' +
+            '</div>' +
+            '<div class="oauth-provider-fields">' +
+                '<div class="admin-form-row"><label>Client ID</label><input type="text" id="oauth-' + name + '-client-id" value="" placeholder="Client ID"></div>' +
+                '<div class="admin-form-row"><label>Client Secret</label><input type="password" id="oauth-' + name + '-client-secret" value="" placeholder="Client Secret"></div>' +
+                '<div class="admin-form-row"><label>Auth URL</label><input type="text" id="oauth-' + name + '-auth-url" value="' + escapeAttr(p.auth_url || '') + '" placeholder="Authorization URL"></div>' +
+                '<div class="admin-form-row"><label>Token URL</label><input type="text" id="oauth-' + name + '-token-url" value="' + escapeAttr(p.token_url || '') + '" placeholder="Token URL"></div>' +
+                '<div class="admin-form-row"><label>Redirect URL</label><input type="text" id="oauth-' + name + '-redirect-url" value="' + escapeAttr(p.redirect_url || '') + '" placeholder="' + window.location.origin + '/oauth/callback"></div>' +
+                '<div class="admin-form-row"><label>Scopes</label><input type="text" id="oauth-' + name + '-scopes" value="' + escapeAttr((p.scopes || []).join(',')) + '" placeholder="openid,email,profile"></div>' +
+            '</div>';
+        container.appendChild(card);
+        showAdminToast(i18n.t('admin_settings_oauth_added') + ' ' + label, 'success');
+    };
+
+    window.removeOAuthProvider = function (name) {
+        if (!confirm(i18n.t('admin_settings_oauth_remove_confirm'))) return;
+        adminFetch('/api/oauth/providers/' + name, { method: 'DELETE' })
+            .then(function (res) {
+                if (!res.ok) return res.json().then(function (d) { throw new Error(d.error || 'Failed'); });
+                var card = document.querySelector('.oauth-provider-card[data-provider="' + name + '"]');
+                if (card) card.remove();
+                showAdminToast(i18n.t('admin_settings_oauth_removed'), 'success');
+                // If no more cards, show empty message
+                var container = document.getElementById('oauth-providers-list');
+                if (container && !container.querySelector('.oauth-provider-card')) {
+                    container.innerHTML = '<p class="admin-table-empty">' + i18n.t('admin_settings_oauth_empty') + '</p>';
+                }
+            })
+            .catch(function (err) {
+                showAdminToast(err.message, 'error');
+            });
+    };
+
+    // --- OAuth Login Buttons ---
+
+    var oauthProviderIcons = {
+        google: '<svg class="oauth-icon" width="20" height="20" viewBox="0 0 24 24"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>',
+        apple: '<svg class="oauth-icon" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M17.05 20.28c-.98.95-2.05.88-3.08.4-1.09-.5-2.08-.48-3.24 0-1.44.62-2.2.44-3.06-.4C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>',
+        amazon: '<svg class="oauth-icon" width="20" height="20" viewBox="0 0 24 24"><path d="M13.96 22.45c3.75-2.76 5.58-5.57 5.58-8.45 0-1.8-.72-2.7-2.16-2.7-.96 0-1.68.54-2.16 1.62l-.48-.3c.6-1.44 1.68-2.16 3.24-2.16 1.92 0 2.88 1.14 2.88 3.42 0 3.12-2.04 6.12-6.06 9l-.84-.43z" fill="#FF9900"/><path d="M1.2 17.55C4.08 19.85 7.68 21 12 21c2.76 0 5.52-.66 8.28-1.98l.48.84C17.64 21.62 14.76 22.5 12 22.5c-4.56 0-8.28-1.26-11.16-3.78l.36-1.17z" fill="#FF9900"/><path d="M6.96 12.75c0-1.56.42-2.82 1.26-3.78.84-.96 1.92-1.44 3.24-1.44 1.2 0 2.16.42 2.88 1.26v-1.02h1.8v7.38c0 1.68-.48 2.94-1.44 3.78-.96.84-2.22 1.26-3.78 1.26-1.32 0-2.52-.36-3.6-1.08l.72-1.44c.84.6 1.8.9 2.88.9 1.92 0 2.88-1.02 2.88-3.06v-.72c-.72.84-1.68 1.26-2.88 1.26-1.2 0-2.22-.48-3.06-1.44-.84-.96-1.26-2.16-1.26-3.6zm1.8.12c0 1.08.3 1.98.9 2.7.6.72 1.38 1.08 2.34 1.08.96 0 1.74-.36 2.34-1.08V9.93c-.6-.72-1.38-1.08-2.34-1.08-.96 0-1.74.36-2.34 1.08-.6.72-.9 1.62-.9 2.7z" fill="#232F3E"/></svg>',
+        facebook: '<svg class="oauth-icon" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>'
+    };
+
+    function renderOAuthLoginButtons(providers) {
+        var container = document.getElementById('oauth-login-buttons');
+        var divider = document.getElementById('oauth-login-divider');
+        if (!container) return;
+        if (!providers || providers.length === 0) {
+            container.classList.add('hidden');
+            if (divider) divider.classList.add('hidden');
+            return;
+        }
+        container.innerHTML = '';
+        providers.forEach(function (name) {
+            var label = oauthProviderLabels[name] || name;
+            var icon = oauthProviderIcons[name] || '';
+            var btn = document.createElement('button');
+            btn.className = 'oauth-btn oauth-' + name;
+            btn.innerHTML = icon + '<span>' + i18n.t('login_oauth_with') + ' ' + label + '</span>';
+            btn.onclick = function () { startOAuthLogin(name); };
+            container.appendChild(btn);
+        });
+        container.classList.remove('hidden');
+        if (divider) divider.classList.remove('hidden');
+    }
+
+    function startOAuthLogin(provider) {
+        fetch('/api/oauth/url?provider=' + encodeURIComponent(provider))
+            .then(function (res) { return res.json(); })
+            .then(function (data) {
+                if (data.url) {
+                    window.location.href = data.url;
+                } else {
+                    showToast(i18n.t('login_oauth_failed'), 'error');
+                }
+            })
+            .catch(function () {
+                showToast(i18n.t('login_oauth_failed'), 'error');
+            });
+    }
+
+    // Handle OAuth callback (when redirected back from provider)
+    function handleOAuthCallbackFromURL() {
+        var params = new URLSearchParams(window.location.search);
+        var code = params.get('code');
+        var state = params.get('state');
+        if (!code || !state) return false;
+        // Extract provider from state (format: "state-{provider}")
+        var provider = state.replace('state-', '');
+        if (!provider) return false;
+
+        fetch('/api/oauth/callback', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider: provider, code: code })
+        })
+        .then(function (res) {
+            if (!res.ok) return res.json().then(function (d) { throw new Error(d.error || 'OAuth failed'); });
+            return res.json();
+        })
+        .then(function (data) {
+            if (data.session && data.user) {
+                saveSession(data.session, { id: data.user.id, email: data.user.email, name: data.user.name, provider: data.user.provider });
+                window.history.replaceState({}, '', '/chat');
+                handleRoute();
+            }
+        })
+        .catch(function (err) {
+            showToast(err.message || i18n.t('login_oauth_failed'), 'error');
+            window.history.replaceState({}, '', '/login');
+            handleRoute();
+        });
+        return true;
+    }
 
     // --- Knowledge Entry ---
 
@@ -1970,7 +2375,10 @@
     // --- Init ---
 
     function init() {
-        // Fetch admin login route and product name, then handle routing
+        // Check for OAuth callback first
+        if (handleOAuthCallbackFromURL()) return;
+
+        // Fetch admin login route, product name, and OAuth providers, then handle routing
         var promises = [];
 
         promises.push(
@@ -1984,6 +2392,17 @@
 
         promises.push(
             fetchProductName()
+        );
+
+        promises.push(
+            fetch('/api/app-info')
+                .then(function (res) { return res.json(); })
+                .then(function (data) {
+                    if (data.oauth_providers) {
+                        renderOAuthLoginButtons(data.oauth_providers);
+                    }
+                })
+                .catch(function () { /* ignore */ })
         );
 
         Promise.all(promises).then(function () {

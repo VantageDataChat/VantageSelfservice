@@ -28,10 +28,25 @@ type QueryRequest struct {
 
 // QueryResponse represents the result of a RAG query.
 type QueryResponse struct {
-	Answer  string      `json:"answer"`
-	Sources []SourceRef `json:"sources"`
-	IsPending bool   `json:"is_pending"`
-	Message   string `json:"message,omitempty"`
+	Answer    string      `json:"answer"`
+	Sources   []SourceRef `json:"sources"`
+	IsPending bool        `json:"is_pending"`
+	Message   string      `json:"message,omitempty"`
+	DebugInfo *DebugInfo  `json:"debug_info,omitempty"`
+}
+
+// DebugInfo holds diagnostic information for debugging the query pipeline.
+type DebugInfo struct {
+	Intent          string            `json:"intent"`
+	VectorDim       int               `json:"vector_dim"`
+	TopK            int               `json:"top_k"`
+	Threshold       float64           `json:"threshold"`
+	ResultCount     int               `json:"result_count"`
+	RelaxedSearch   bool              `json:"relaxed_search"`
+	RelaxedResults  []DebugSearchHit  `json:"relaxed_results,omitempty"`
+	TopResults      []DebugSearchHit  `json:"top_results,omitempty"`
+	LLMUnableAnswer bool              `json:"llm_unable_answer"`
+	Steps           []string          `json:"steps"`
 }
 
 // SourceRef represents a reference to a source document chunk.
@@ -40,6 +55,13 @@ type SourceRef struct {
 	ChunkIndex   int    `json:"chunk_index"`
 	Snippet      string `json:"snippet"`
 	ImageURL     string `json:"image_url,omitempty"`
+}
+
+// DebugSearchHit holds a single search result's diagnostic info.
+type DebugSearchHit struct {
+	DocName  string  `json:"doc_name"`
+	Score    float64 `json:"score"`
+	DimMatch bool    `json:"dim_match"`
 }
 
 // QueryEngine orchestrates the RAG query flow: embed → search → LLM generate or pending.
@@ -163,12 +185,26 @@ func (qe *QueryEngine) classifyIntent(question string) (*IntentResult, error) {
 // 3. If results found, call LLM to generate an answer with source references
 // 4. If no results, create a pending question and notify the user
 func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
+	// Initialize debug info if debug mode is enabled
+	debugMode := qe.config != nil && qe.config.Vector.DebugMode
+	var dbg *DebugInfo
+	if debugMode {
+		dbg = &DebugInfo{
+			TopK:      qe.config.Vector.TopK,
+			Threshold: qe.config.Vector.Threshold,
+		}
+	}
+
 	// Step 0: Intent classification (skip if image is attached — image may contain product info)
 	if req.ImageData == "" {
 		intent, err := qe.classifyIntent(req.Question)
 		if err == nil {
 			switch intent.Intent {
 			case "greeting":
+			if debugMode {
+				dbg.Intent = "greeting"
+				dbg.Steps = append(dbg.Steps, "Step 0: intent=greeting, returning product intro")
+			}
 			// Return product intro as greeting response, in the user's language
 			intro := "您好！欢迎使用我们的产品。"
 			if qe.config != nil && qe.config.ProductIntro != "" {
@@ -183,8 +219,12 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 			if tErr == nil && translated != "" {
 				intro = translated
 			}
-			return &QueryResponse{Answer: intro}, nil
+			return &QueryResponse{Answer: intro, DebugInfo: dbg}, nil
 		case "irrelevant":
+			if debugMode {
+				dbg.Intent = "irrelevant"
+				dbg.Steps = append(dbg.Steps, "Step 0: intent=irrelevant, reason="+intent.Reason)
+			}
 			msg := "抱歉，这个问题与我们的产品无关。请问有什么产品方面的问题需要帮助吗？"
 			if intent.Reason != "" {
 				msg = "抱歉，" + intent.Reason + "。请问有什么产品方面的问题需要帮助吗？"
@@ -197,10 +237,112 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 			if tErr == nil && translated != "" {
 				msg = translated
 			}
-			return &QueryResponse{Answer: msg}, nil
+			return &QueryResponse{Answer: msg, DebugInfo: dbg}, nil
 		}
 		}
 	}
+
+	if debugMode {
+		dbg.Intent = "product"
+		dbg.Steps = append(dbg.Steps, "Step 0: intent=product, proceeding to RAG pipeline")
+	}
+
+	// ===== 3-Level Text Similarity Processing =====
+	// Level 1: Text-based matching (free — no API calls)
+	// Level 2: Vector search + cached answer reuse (embedding API only, no LLM)
+	// Level 3: Full RAG pipeline (embedding + LLM)
+	textMatchEnabled := qe.config != nil && qe.config.Vector.TextMatchEnabled
+
+	if textMatchEnabled && req.ImageData == "" {
+		if debugMode {
+			dbg.Steps = append(dbg.Steps, "TextMatch: Level 1 — text-based matching (no API cost)")
+		}
+
+		// Level 1: Text-based search against chunk cache
+		textResults, textErr := qe.vectorStore.TextSearch(req.Question, 3, 0.65)
+		if textErr == nil && len(textResults) > 0 && textResults[0].Score >= 0.75 {
+			log.Printf("[Query] Level 1 text match hit: score=%.4f doc=%q", textResults[0].Score, textResults[0].DocumentName)
+			if debugMode {
+				dbg.Steps = append(dbg.Steps, fmt.Sprintf("TextMatch: Level 1 HIT score=%.4f doc=%q", textResults[0].Score, textResults[0].DocumentName))
+			}
+
+			// Check if this chunk belongs to a pending-answer doc (has cached LLM answer)
+			cachedAnswer := qe.findCachedAnswer(textResults[0].DocumentID)
+			if cachedAnswer != "" {
+				log.Printf("[Query] Level 1 returning cached answer (zero API cost)")
+				if debugMode {
+					dbg.Steps = append(dbg.Steps, "TextMatch: Level 1 returning cached answer — zero API cost")
+				}
+				sources := make([]SourceRef, 0, len(textResults))
+				for _, r := range textResults {
+					snippet := r.ChunkText
+					if len(snippet) > 100 {
+						snippet = snippet[:100]
+					}
+					sources = append(sources, SourceRef{
+						DocumentName: r.DocumentName,
+						ChunkIndex:   r.ChunkIndex,
+						Snippet:      snippet,
+						ImageURL:     r.ImageURL,
+					})
+				}
+				return &QueryResponse{Answer: cachedAnswer, Sources: sources, DebugInfo: dbg}, nil
+			}
+
+			// Level 2: We have a good text match but no cached answer.
+			// Use embedding to confirm, then try to reuse a cached answer from similar pending Q&A.
+			if debugMode {
+				dbg.Steps = append(dbg.Steps, "TextMatch: Level 2 — confirming with embedding (embedding API only)")
+			}
+			queryVector, embErr := qe.embeddingService.Embed(req.Question)
+			if embErr == nil {
+				vecResults, vecErr := qe.vectorStore.Search(queryVector, qe.config.Vector.TopK, qe.config.Vector.Threshold)
+				if vecErr == nil && len(vecResults) > 0 && vecResults[0].Score >= 0.75 {
+					log.Printf("[Query] Level 2 vector confirmed: score=%.4f", vecResults[0].Score)
+					if debugMode {
+						dbg.VectorDim = len(queryVector)
+						dbg.Steps = append(dbg.Steps, fmt.Sprintf("TextMatch: Level 2 vector confirmed score=%.4f", vecResults[0].Score))
+					}
+
+					// Try to find a cached LLM answer from the top vector result
+					cachedAnswer = qe.findCachedAnswer(vecResults[0].DocumentID)
+					if cachedAnswer != "" {
+						log.Printf("[Query] Level 2 returning cached answer (embedding API only, no LLM)")
+						if debugMode {
+							dbg.Steps = append(dbg.Steps, "TextMatch: Level 2 returning cached answer — no LLM cost")
+						}
+						sources := make([]SourceRef, 0, len(vecResults))
+						for _, r := range vecResults {
+							snippet := r.ChunkText
+							if len(snippet) > 100 {
+								snippet = snippet[:100]
+							}
+							sources = append(sources, SourceRef{
+								DocumentName: r.DocumentName,
+								ChunkIndex:   r.ChunkIndex,
+								Snippet:      snippet,
+								ImageURL:     r.ImageURL,
+							})
+						}
+						return &QueryResponse{Answer: cachedAnswer, Sources: sources, DebugInfo: dbg}, nil
+					}
+				}
+			}
+			if debugMode {
+				dbg.Steps = append(dbg.Steps, "TextMatch: no cached answer found, falling through to Level 3 (full RAG)")
+			}
+		} else {
+			if debugMode {
+				score := 0.0
+				if textErr == nil && len(textResults) > 0 {
+					score = textResults[0].Score
+				}
+				dbg.Steps = append(dbg.Steps, fmt.Sprintf("TextMatch: Level 1 miss (best_score=%.4f), proceeding to Level 3", score))
+			}
+		}
+	}
+
+	// ===== Level 3: Full RAG Pipeline =====
 
 	// Step 1: Embed the question
 	queryVector, err := qe.embeddingService.Embed(req.Question)
@@ -208,6 +350,10 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 		return nil, fmt.Errorf("failed to embed question: %w", err)
 	}
 	log.Printf("[Query] question=%q, vector_dim=%d", req.Question, len(queryVector))
+	if debugMode {
+		dbg.VectorDim = len(queryVector)
+		dbg.Steps = append(dbg.Steps, fmt.Sprintf("Step 1: embedded question, vector_dim=%d", len(queryVector)))
+	}
 
 	// Step 2: Search vector store
 	topK := qe.config.Vector.TopK
@@ -217,6 +363,16 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 		return nil, fmt.Errorf("failed to search vector store: %w", err)
 	}
 	log.Printf("[Query] search topK=%d threshold=%.2f results=%d", topK, threshold, len(results))
+	if debugMode {
+		dbg.ResultCount = len(results)
+		dbg.Steps = append(dbg.Steps, fmt.Sprintf("Step 2: search topK=%d threshold=%.2f results=%d", topK, threshold, len(results)))
+		for i, r := range results {
+			if i >= 5 {
+				break
+			}
+			dbg.TopResults = append(dbg.TopResults, DebugSearchHit{DocName: r.DocumentName, Score: r.Score, DimMatch: true})
+		}
+	}
 
 	// Step 2.5: If image provided, also search with image embedding and merge results
 	var imgVec []float64
@@ -242,13 +398,26 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 
 	// Step 3: If no results above threshold, try with lower threshold before giving up
 	if len(results) == 0 {
+		if debugMode {
+			dbg.RelaxedSearch = true
+			dbg.Steps = append(dbg.Steps, "Step 3: no results above threshold, trying relaxed search (threshold=0.0, accept>=0.3)")
+		}
 		relaxedResults, _ := qe.vectorStore.Search(queryVector, 3, 0.0)
 		log.Printf("[Query] relaxed search results=%d", len(relaxedResults))
 		for i, r := range relaxedResults {
 			log.Printf("[Query]   relaxed[%d] score=%.4f doc=%q dim_match=%v", i, r.Score, r.DocumentName, true)
+			if debugMode {
+				dbg.RelaxedResults = append(dbg.RelaxedResults, DebugSearchHit{DocName: r.DocumentName, Score: r.Score, DimMatch: true})
+			}
+		}
+		if debugMode && len(relaxedResults) == 0 {
+			dbg.Steps = append(dbg.Steps, "Step 3: relaxed search returned 0 results (vector store is empty)")
 		}
 		if len(relaxedResults) > 0 && relaxedResults[0].Score >= 0.3 {
 			results = relaxedResults[:1]
+			if debugMode {
+				dbg.Steps = append(dbg.Steps, fmt.Sprintf("Step 3: accepted relaxed result score=%.4f", relaxedResults[0].Score))
+			}
 		}
 
 		// Also try relaxed search with image vector
@@ -298,8 +467,14 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 
 	// Step 4: If still no results, create pending question
 	if len(results) == 0 {
+		if debugMode {
+			dbg.Steps = append(dbg.Steps, "Step 4: no results after all searches, falling back to pending question")
+		}
 		// Check for existing similar pending question first
 		if existing := qe.findSimilarPendingQuestion(req.Question, queryVector); existing != "" {
+			if debugMode {
+				dbg.Steps = append(dbg.Steps, "Step 4: found similar pending question, returning 'already processing'")
+			}
 			pendingMsg := "该问题已在处理中，请耐心等待回复"
 			translated, tErr := qe.llmService.Generate(
 				"你是一个翻译助手。将以下内容翻译为与用户提问相同的语言。如果用户用英文提问，翻译为英文；如果用户用中文提问，保持中文。只输出翻译结果，不要添加任何解释。",
@@ -312,11 +487,15 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 			return &QueryResponse{
 				IsPending: true,
 				Message:   pendingMsg,
+				DebugInfo: dbg,
 			}, nil
 		}
 
 		if err := qe.createPendingQuestion(req.Question, req.UserID, req.ImageData); err != nil {
 			return nil, fmt.Errorf("failed to create pending question: %w", err)
+		}
+		if debugMode {
+			dbg.Steps = append(dbg.Steps, "Step 4: created new pending question, returning 'transferred to manual'")
 		}
 		pendingMsg := "该问题已转交人工处理，请稍后查看回复"
 		translated, tErr := qe.llmService.Generate(
@@ -330,7 +509,12 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 		return &QueryResponse{
 			IsPending: true,
 			Message:   pendingMsg,
+			DebugInfo: dbg,
 		}, nil
+	}
+
+	if debugMode {
+		dbg.Steps = append(dbg.Steps, fmt.Sprintf("Step 4: skipped (have %d results), proceeding to LLM", len(results)))
 	}
 
 	// Step 4.5: Enrich search results with images from the same documents
@@ -367,12 +551,18 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 	isPending := false
 	if isUnableToAnswer(answer) {
 		log.Printf("[Query] LLM answer indicates unable to answer, creating pending question")
+		if debugMode {
+			dbg.LLMUnableAnswer = true
+			dbg.Steps = append(dbg.Steps, "Step 5.5: LLM indicated unable to answer, creating pending question")
+		}
 		if existing := qe.findSimilarPendingQuestion(req.Question, queryVector); existing != "" {
 			isPending = true
 		} else {
 			_ = qe.createPendingQuestion(req.Question, req.UserID, req.ImageData)
 			isPending = true
 		}
+	} else if debugMode {
+		dbg.Steps = append(dbg.Steps, "Step 5.5: LLM answered successfully")
 	}
 
 	// Step 6: Build source references
@@ -399,6 +589,7 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 		Answer:    answer,
 		Sources:   sources,
 		IsPending: isPending,
+		DebugInfo: dbg,
 	}, nil
 }
 
@@ -451,6 +642,26 @@ func (qe *QueryEngine) findDocumentImages(results []vectorstore.SearchResult) []
 	}
 
 	return images
+}
+
+// findCachedAnswer looks up a cached LLM answer for a document ID.
+// If the document is a pending-answer (docID starts with "pending-answer-"),
+// it returns the stored llm_answer from the pending_questions table.
+// This allows Level 1/2 to skip the LLM call entirely.
+func (qe *QueryEngine) findCachedAnswer(documentID string) string {
+	if !strings.HasPrefix(documentID, "pending-answer-") {
+		return ""
+	}
+	questionID := strings.TrimPrefix(documentID, "pending-answer-")
+	var llmAnswer sql.NullString
+	err := qe.db.QueryRow(
+		`SELECT llm_answer FROM pending_questions WHERE id = ? AND status = 'answered'`,
+		questionID,
+	).Scan(&llmAnswer)
+	if err != nil || !llmAnswer.Valid || strings.TrimSpace(llmAnswer.String) == "" {
+		return ""
+	}
+	return llmAnswer.String
 }
 
 // findSimilarPendingQuestion checks if there's already a pending question similar

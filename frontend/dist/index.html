@@ -27,6 +27,11 @@
                     <!-- Login Form -->
                     <div id="user-login-form" class="admin-login-form">
                         <p class="login-subtitle" style="text-align:center;margin-bottom:1rem;" data-i18n="login_subtitle">登录您的账号</p>
+
+                        <!-- OAuth Buttons (dynamically populated) -->
+                        <div id="oauth-login-buttons" class="oauth-buttons hidden"></div>
+                        <div id="oauth-login-divider" class="login-divider hidden"><span data-i18n="login_divider_or">或</span></div>
+
                         <div class="input-group">
                             <input type="email" id="user-login-email" data-i18n-placeholder="login_email" placeholder="邮箱" autocomplete="email">
                             <input type="password" id="user-login-password" data-i18n-placeholder="login_password" placeholder="密码" autocomplete="current-password">
@@ -103,6 +108,10 @@
                         <div class="input-group">
                             <input type="text" id="admin-username" data-i18n-placeholder="admin_username" placeholder="管理员用户名" autocomplete="username">
                             <input type="password" id="admin-password" data-i18n-placeholder="admin_password" placeholder="管理员密码" autocomplete="current-password">
+                            <div class="captcha-row">
+                                <input type="text" id="admin-login-captcha" data-i18n-placeholder="admin_captcha" placeholder="验证码" autocomplete="off" class="captcha-input">
+                                <img id="admin-login-captcha-img" class="captcha-img" alt="captcha" onclick="loadAdminCaptcha()" title="点击刷新">
+                            </div>
                             <button class="admin-submit-btn" onclick="handleAdminLogin()" data-i18n="admin_login_btn">登录</button>
                         </div>
                         <p id="admin-login-error" class="error-text hidden"></p>
@@ -381,6 +390,22 @@
                                         </select>
                                         <span class="admin-form-hint" data-i18n="admin_settings_priority_hint">设置回答时优先使用图文内容还是纯文字内容</span>
                                     </div>
+                                    <div class="admin-form-row">
+                                        <label data-i18n="admin_settings_text_match">三级文本匹配</label>
+                                        <select id="cfg-vec-text-match">
+                                            <option value="true" data-i18n="admin_settings_text_match_on">开启（优先文本匹配，节省 API 费用）</option>
+                                            <option value="false" data-i18n="admin_settings_text_match_off">关闭（始终使用完整 RAG 流程）</option>
+                                        </select>
+                                        <span class="admin-form-hint" data-i18n="admin_settings_text_match_hint">开启后查询按3级处理：1级纯文本匹配（免费）→ 2级向量确认+缓存复用（仅嵌入费用）→ 3级完整RAG（嵌入+LLM费用）</span>
+                                    </div>
+                                    <div class="admin-form-row">
+                                        <label data-i18n="admin_settings_debug_mode">调试模式</label>
+                                        <select id="cfg-vec-debug-mode">
+                                            <option value="false" data-i18n="admin_settings_debug_off">关闭</option>
+                                            <option value="true" data-i18n="admin_settings_debug_on">开启（查询结果附带诊断信息）</option>
+                                        </select>
+                                        <span class="admin-form-hint" data-i18n="admin_settings_debug_hint">开启后聊天回复会显示三级搜索的详细过程，方便排查问题</span>
+                                    </div>
                                 </fieldset>
 
                                 <fieldset class="admin-fieldset">
@@ -436,6 +461,24 @@
                                         <label data-i18n="admin_settings_login_route">管理员登录路由</label>
                                         <input type="text" id="cfg-admin-login-route" placeholder="/admin">
                                         <span class="admin-form-hint" data-i18n="admin_settings_login_route_hint">访问此隐藏路由可进入管理员登录页面</span>
+                                    </div>
+                                </fieldset>
+
+                                <fieldset class="admin-fieldset">
+                                    <legend data-i18n="admin_settings_oauth">OAuth 登录设置</legend>
+                                    <span class="admin-form-hint" data-i18n="admin_settings_oauth_hint">配置第三方OAuth登录，设置完成后用户可在登录页看到对应的登录按钮</span>
+                                    <div id="oauth-providers-list" class="oauth-providers-admin"></div>
+                                    <div class="admin-form-row" style="margin-top:1rem;">
+                                        <label data-i18n="admin_settings_oauth_add">添加 OAuth 平台</label>
+                                        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+                                            <select id="oauth-add-provider-select">
+                                                <option value="google">Google</option>
+                                                <option value="apple">Apple</option>
+                                                <option value="amazon">Amazon</option>
+                                                <option value="facebook">Facebook</option>
+                                            </select>
+                                            <button class="btn-secondary" onclick="addOAuthProviderForm()" data-i18n="admin_settings_oauth_add_btn">添加</button>
+                                        </div>
                                     </div>
                                 </fieldset>
 

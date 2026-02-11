@@ -116,6 +116,64 @@ body {
 .oauth-facebook { background: #1877F2; color: #fff; border-color: #1877F2; }
 .oauth-facebook:hover { background: #166FE5; }
 
+/* OAuth Admin Settings */
+.oauth-providers-admin {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    margin-top: 0.75rem;
+}
+
+.oauth-provider-card {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: 1rem;
+    background: var(--color-card);
+}
+
+.oauth-provider-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+}
+
+.oauth-provider-name {
+    font-weight: 600;
+    font-size: 1rem;
+}
+
+.oauth-status {
+    font-size: 0.75rem;
+    padding: 0.125rem 0.5rem;
+    border-radius: 999px;
+    font-weight: 500;
+}
+
+.oauth-status-ok {
+    background: #D1FAE5;
+    color: #065F46;
+}
+
+.oauth-status-incomplete {
+    background: #FEF3C7;
+    color: #92400E;
+}
+
+.oauth-provider-header .btn-danger {
+    margin-left: auto;
+}
+
+.oauth-provider-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.oauth-provider-fields .admin-form-row {
+    margin-bottom: 0;
+}
+
 /* Divider */
 .login-divider {
     display: flex;
@@ -585,6 +643,82 @@ body {
 .chat-msg-pending .pending-icon {
     display: inline-block;
     margin-right: 0.375rem;
+}
+
+/* Not Satisfied Button */
+.chat-not-satisfied-btn {
+    margin-top: 0.375rem;
+    padding: 0.25rem 0.75rem;
+    font-size: 0.75rem;
+    color: var(--color-text-secondary);
+    background: transparent;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: all 0.2s;
+    align-self: flex-start;
+}
+.chat-not-satisfied-btn:hover {
+    color: #DC2626;
+    border-color: #DC2626;
+    background: #FEF2F2;
+}
+.chat-not-satisfied-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Confirmation Dialog */
+.chat-confirm-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+}
+.chat-confirm-dialog {
+    background: #fff;
+    border-radius: var(--radius-lg);
+    padding: 1.5rem;
+    max-width: 320px;
+    width: 90%;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+    text-align: center;
+}
+.chat-confirm-dialog p {
+    margin: 0 0 1rem;
+    font-size: 0.9375rem;
+    color: var(--color-text);
+}
+.chat-confirm-actions {
+    display: flex;
+    gap: 0.75rem;
+    justify-content: center;
+}
+.chat-confirm-actions button {
+    padding: 0.5rem 1.25rem;
+    border-radius: var(--radius-md);
+    font-size: 0.875rem;
+    cursor: pointer;
+    border: none;
+    transition: background 0.2s;
+}
+.chat-confirm-yes {
+    background: var(--color-primary);
+    color: #fff;
+}
+.chat-confirm-yes:hover {
+    background: var(--color-primary-hover);
+}
+.chat-confirm-no {
+    background: var(--color-bg-secondary);
+    color: var(--color-text);
+    border: 1px solid var(--color-border);
+}
+.chat-confirm-no:hover {
+    background: var(--color-border);
 }
 
 /* Sources */
@@ -1339,6 +1473,13 @@ body {
 }
 .captcha-question:hover {
     background: #e5e7eb;
+}
+.captcha-img {
+    height: 40px;
+    border-radius: 8px;
+    border: 1px solid #d1d5db;
+    cursor: pointer;
+    user-select: none;
 }
 
 /* Chat Image Paste Preview */

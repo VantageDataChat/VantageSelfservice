@@ -54,6 +54,10 @@ func (m *mockVectorStore) DeleteByDocID(docID string) error {
 	return nil
 }
 
+func (m *mockVectorStore) TextSearch(query string, topK int, threshold float64) ([]vectorstore.SearchResult, error) {
+	return nil, nil
+}
+
 type mockLLMService struct {
 	generateFn func(prompt string, context []string, question string) (string, error)
 }
@@ -77,6 +81,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 		status TEXT NOT NULL,
 		answer TEXT,
 		llm_answer TEXT,
+		image_data TEXT,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		answered_at DATETIME
 	)`)

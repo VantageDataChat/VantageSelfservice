@@ -9,6 +9,7 @@ import (
 	"math"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -18,6 +19,7 @@ import (
 type VectorStore interface {
 	Store(docID string, chunks []VectorChunk) error
 	Search(queryVector []float64, topK int, threshold float64) ([]SearchResult, error)
+	TextSearch(query string, topK int, threshold float64) ([]SearchResult, error)
 	DeleteByDocID(docID string) error
 }
 
@@ -268,6 +270,139 @@ func (s *SQLiteVectorStore) Search(queryVector []float64, topK int, threshold fl
 	}
 
 	return allResults, nil
+}
+
+// TextSearch performs a text-based similarity search against the in-memory cache
+// using keyword overlap and character bigram Jaccard similarity.
+// This is Level 1 of the 3-level matching: zero API cost.
+// Returns results sorted by text similarity score descending.
+func (s *SQLiteVectorStore) TextSearch(query string, topK int, threshold float64) ([]SearchResult, error) {
+	s.mu.Lock()
+	if err := s.ensureCache(); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	s.mu.Unlock()
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if len(s.cache) == 0 {
+		return nil, nil
+	}
+
+	queryLower := strings.ToLower(query)
+	queryBigrams := charBigrams(queryLower)
+	queryKeywords := extractKeywords(queryLower)
+
+	type scored struct {
+		idx   int
+		score float64
+	}
+	var hits []scored
+
+	for i := range s.cache {
+		c := &s.cache[i]
+		chunkLower := strings.ToLower(c.chunkText)
+
+		// Combine keyword overlap score and bigram Jaccard score
+		kwScore := keywordOverlap(queryKeywords, chunkLower)
+		bigramScore := jaccardBigrams(queryBigrams, charBigrams(chunkLower))
+
+		// Weighted combination: keywords matter more for short queries
+		score := kwScore*0.6 + bigramScore*0.4
+
+		if score >= threshold {
+			hits = append(hits, scored{idx: i, score: score})
+		}
+	}
+
+	sort.Slice(hits, func(i, j int) bool {
+		return hits[i].score > hits[j].score
+	})
+	if len(hits) > topK {
+		hits = hits[:topK]
+	}
+
+	results := make([]SearchResult, len(hits))
+	for i, h := range hits {
+		c := &s.cache[h.idx]
+		results[i] = SearchResult{
+			ChunkText:    c.chunkText,
+			ChunkIndex:   c.chunkIndex,
+			DocumentID:   c.documentID,
+			DocumentName: c.documentName,
+			Score:        h.score,
+			ImageURL:     c.imageURL,
+		}
+	}
+	return results, nil
+}
+
+// charBigrams extracts character bigrams from a string.
+func charBigrams(s string) map[string]bool {
+	runes := []rune(s)
+	result := make(map[string]bool)
+	for i := 0; i < len(runes)-1; i++ {
+		result[string(runes[i:i+2])] = true
+	}
+	return result
+}
+
+// jaccardBigrams computes Jaccard similarity between two bigram sets.
+func jaccardBigrams(a, b map[string]bool) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	intersection := 0
+	for bg := range a {
+		if b[bg] {
+			intersection++
+		}
+	}
+	union := len(a) + len(b) - intersection
+	if union == 0 {
+		return 0
+	}
+	return float64(intersection) / float64(union)
+}
+
+// extractKeywords splits text into meaningful tokens (≥2 runes), deduped.
+func extractKeywords(s string) []string {
+	fields := strings.FieldsFunc(s, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '\n' || r == ',' || r == '.' ||
+			r == '?' || r == '!' || r == '\u3002' || r == '\uff0c' || r == '\uff1f' ||
+			r == '\uff01' || r == '\u3001' || r == '\uff1a' || r == '\uff1b' ||
+			r == '\u201c' || r == '\u201d' || r == '\uff08' || r == '\uff09' ||
+			r == '(' || r == ')' || r == '[' || r == ']' || r == '{' || r == '}'
+	})
+	seen := make(map[string]bool)
+	var kw []string
+	for _, f := range fields {
+		if len([]rune(f)) < 2 {
+			continue
+		}
+		lower := strings.ToLower(f)
+		if !seen[lower] {
+			seen[lower] = true
+			kw = append(kw, lower)
+		}
+	}
+	return kw
+}
+
+// keywordOverlap computes the fraction of query keywords found in the chunk text.
+func keywordOverlap(queryKeywords []string, chunkLower string) float64 {
+	if len(queryKeywords) == 0 {
+		return 0
+	}
+	matched := 0
+	for _, kw := range queryKeywords {
+		if strings.Contains(chunkLower, kw) {
+			matched++
+		}
+	}
+	return float64(matched) / float64(len(queryKeywords))
 }
 
 // DeleteByDocID removes all chunks for the given document from DB and cache.

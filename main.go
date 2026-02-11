@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"helpdesk/internal/auth"
+	"helpdesk/internal/captcha"
 	"helpdesk/internal/chunker"
 	"helpdesk/internal/config"
 	"helpdesk/internal/db"
@@ -220,6 +221,7 @@ func registerAPIHandlers(app *App) {
 	// OAuth
 	http.HandleFunc("/api/oauth/url", handleOAuthURL(app))
 	http.HandleFunc("/api/oauth/callback", handleOAuthCallback(app))
+	http.HandleFunc("/api/oauth/providers/", handleOAuthProviderDelete(app))
 
 	// Admin login
 	http.HandleFunc("/api/admin/login", handleAdminLogin(app))
@@ -231,6 +233,7 @@ func registerAPIHandlers(app *App) {
 	http.HandleFunc("/api/auth/login", handleUserLogin(app))
 	http.HandleFunc("/api/auth/verify", handleVerifyEmail(app))
 	http.HandleFunc("/api/captcha", handleCaptcha())
+	http.HandleFunc("/api/captcha/image", handleCaptchaImage())
 
 	// Public info
 	http.HandleFunc("/api/product-intro", handleProductIntro(app))
@@ -249,11 +252,19 @@ func registerAPIHandlers(app *App) {
 
 	// Pending questions
 	http.HandleFunc("/api/pending/answer", handlePendingAnswer(app))
+	http.HandleFunc("/api/pending/create", handlePendingCreate(app))
 	http.HandleFunc("/api/pending/", handlePendingByID(app))
 	http.HandleFunc("/api/pending", handlePending(app))
 
 	// Config (with role check)
 	http.HandleFunc("/api/config", handleConfigWithRole(app))
+
+	// System status (public — used by frontend to check if system is ready)
+	http.HandleFunc("/api/system/status", handleSystemStatus(app))
+
+	// LLM / Embedding test endpoints (admin only)
+	http.HandleFunc("/api/test/llm", handleTestLLM(app))
+	http.HandleFunc("/api/test/embedding", handleTestEmbedding(app))
 
 	// Email test
 	http.HandleFunc("/api/email/test", handleEmailTest(app))
@@ -335,6 +346,32 @@ func handleOAuthCallback(app *App) http.HandlerFunc {
 	}
 }
 
+func handleOAuthProviderDelete(app *App) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		// Require admin session
+		_, role, err := getAdminSession(app, r)
+		if err != nil || role != "super_admin" {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		// Extract provider name from URL: /api/oauth/providers/{name}
+		provider := strings.TrimPrefix(r.URL.Path, "/api/oauth/providers/")
+		if provider == "" {
+			writeError(w, http.StatusBadRequest, "missing provider name")
+			return
+		}
+		if err := app.DeleteOAuthProvider(provider); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
 // --- Admin login handler ---
 
 func handleAdminLogin(app *App) http.HandlerFunc {
@@ -344,11 +381,17 @@ func handleAdminLogin(app *App) http.HandlerFunc {
 			return
 		}
 		var req struct {
-			Username string `json:"username"`
-			Password string `json:"password"`
+			Username      string `json:"username"`
+			Password      string `json:"password"`
+			CaptchaID     string `json:"captcha_id"`
+			CaptchaAnswer string `json:"captcha_answer"`
 		}
 		if err := readJSONBody(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if !captcha.Validate(req.CaptchaID, req.CaptchaAnswer) {
+			writeError(w, http.StatusBadRequest, "验证码错误")
 			return
 		}
 		resp, err := app.AdminLogin(req.Username, req.Password)
@@ -406,6 +449,17 @@ func handleCaptcha() http.HandlerFunc {
 			return
 		}
 		cap := GenerateCaptcha()
+		writeJSON(w, http.StatusOK, cap)
+	}
+}
+
+func handleCaptchaImage() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		cap := captcha.Generate()
 		writeJSON(w, http.StatusOK, cap)
 	}
 }
@@ -501,7 +555,7 @@ func handleProductIntro(app *App) http.HandlerFunc {
 	}
 }
 
-// handleAppInfo returns public app info (product_name) for frontend display.
+// handleAppInfo returns public app info (product_name, enabled OAuth providers) for frontend display.
 func handleAppInfo(app *App) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -509,7 +563,14 @@ func handleAppInfo(app *App) http.HandlerFunc {
 			return
 		}
 		cfg := app.configManager.Get()
-		writeJSON(w, http.StatusOK, map[string]string{"product_name": cfg.ProductName})
+		providers := app.GetEnabledOAuthProviders()
+		if providers == nil {
+			providers = []string{}
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"product_name":    cfg.ProductName,
+			"oauth_providers": providers,
+		})
 	}
 }
 
@@ -723,6 +784,34 @@ func handlePendingAnswer(app *App) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
+func handlePendingCreate(app *App) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var req struct {
+			Question  string `json:"question"`
+			UserID    string `json:"user_id"`
+			ImageData string `json:"image_data,omitempty"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if req.Question == "" {
+			writeError(w, http.StatusBadRequest, "question is required")
+			return
+		}
+		pq, err := app.CreatePendingQuestion(req.Question, req.UserID, req.ImageData)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, pq)
 	}
 }
 
@@ -976,6 +1065,102 @@ func handleKnowledgeEntry(app *App) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
+// --- System status handler (public) ---
+
+func handleSystemStatus(app *App) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		ready := app.configManager.IsReady()
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"ready": ready,
+		})
+	}
+}
+
+// --- LLM test handler (admin only) ---
+
+func handleTestLLM(app *App) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		_, _, err := getAdminSession(app, r)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		var req struct {
+			Endpoint    string  `json:"endpoint"`
+			APIKey      string  `json:"api_key"`
+			ModelName   string  `json:"model_name"`
+			Temperature float64 `json:"temperature"`
+			MaxTokens   int     `json:"max_tokens"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if req.Endpoint == "" || req.APIKey == "" || req.ModelName == "" {
+			writeError(w, http.StatusBadRequest, "endpoint, api_key, model_name are required")
+			return
+		}
+		if req.Temperature == 0 {
+			req.Temperature = 0.3
+		}
+		if req.MaxTokens == 0 {
+			req.MaxTokens = 64
+		}
+		svc := llm.NewAPILLMService(req.Endpoint, req.APIKey, req.ModelName, req.Temperature, req.MaxTokens)
+		answer, err := svc.Generate("", nil, "请回复：OK")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "reply": answer})
+	}
+}
+
+// --- Embedding test handler (admin only) ---
+
+func handleTestEmbedding(app *App) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		_, _, err := getAdminSession(app, r)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		var req struct {
+			Endpoint      string `json:"endpoint"`
+			APIKey        string `json:"api_key"`
+			ModelName     string `json:"model_name"`
+			UseMultimodal bool   `json:"use_multimodal"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if req.Endpoint == "" || req.APIKey == "" || req.ModelName == "" {
+			writeError(w, http.StatusBadRequest, "endpoint, api_key, model_name are required")
+			return
+		}
+		svc := embedding.NewAPIEmbeddingService(req.Endpoint, req.APIKey, req.ModelName, req.UseMultimodal)
+		vec, err := svc.Embed("hello")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"status": "ok", "dimensions": len(vec)})
 	}
 }
 

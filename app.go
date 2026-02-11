@@ -108,6 +108,11 @@ func (a *App) DeletePendingQuestion(id string) error {
 	return a.pendingManager.DeletePending(id)
 }
 
+// CreatePendingQuestion creates a new pending question from a user who is not satisfied with the answer.
+func (a *App) CreatePendingQuestion(question, userID, imageData string) (*pending.PendingQuestion, error) {
+	return a.pendingManager.CreatePending(question, userID, imageData)
+}
+
 // --- Authentication Interface ---
 
 // GetOAuthURL returns the OAuth authorization URL for the given provider.
@@ -128,7 +133,17 @@ func (a *App) HandleOAuthCallback(provider, code string) (*OAuthCallbackResponse
 		return nil, err
 	}
 
-	session, err := a.sessionManager.CreateSession(user.ID)
+	// Upsert user into the users table
+	_, err = a.db.Exec(
+		`INSERT INTO users (id, email, name, provider, provider_id, email_verified) VALUES (?, ?, ?, ?, ?, 1)
+		 ON CONFLICT(id) DO UPDATE SET name=excluded.name, email=excluded.email, last_login=CURRENT_TIMESTAMP`,
+		provider+"_"+user.ID, user.Email, user.Name, provider, user.ID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("upsert OAuth user: %w", err)
+	}
+
+	session, err := a.sessionManager.CreateSession(provider + "_" + user.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -138,6 +153,44 @@ func (a *App) HandleOAuthCallback(provider, code string) (*OAuthCallbackResponse
 		Session: session,
 	}, nil
 }
+
+// GetEnabledOAuthProviders returns the list of OAuth provider names that have
+// been configured with at least client_id, client_secret, auth_url, and token_url.
+func (a *App) GetEnabledOAuthProviders() []string {
+	cfg := a.configManager.Get()
+	if cfg == nil || cfg.OAuth.Providers == nil {
+		return nil
+	}
+	var enabled []string
+	for name, p := range cfg.OAuth.Providers {
+		if p.ClientID != "" && p.ClientSecret != "" && p.AuthURL != "" && p.TokenURL != "" {
+			enabled = append(enabled, name)
+		}
+	}
+	return enabled
+}
+
+// RefreshOAuthClient rebuilds the OAuthClient from the current config.
+// Called after OAuth provider settings are updated.
+func (a *App) RefreshOAuthClient() {
+	cfg := a.configManager.Get()
+	a.oauthClient = auth.NewOAuthClient(cfg.OAuth.Providers)
+}
+
+// DeleteOAuthProvider removes an OAuth provider from the config.
+func (a *App) DeleteOAuthProvider(provider string) error {
+	cfg := a.configManager.Get()
+	if cfg == nil || cfg.OAuth.Providers == nil {
+		return fmt.Errorf("no OAuth providers configured")
+	}
+	if _, ok := cfg.OAuth.Providers[provider]; !ok {
+		return fmt.Errorf("provider %s not found", provider)
+	}
+	a.configManager.DeleteOAuthProvider(provider)
+	a.RefreshOAuthClient()
+	return nil
+}
+
 
 // AdminLoginResponse contains the session created after admin login.
 type AdminLoginResponse struct {
@@ -628,6 +681,14 @@ func (a *App) UpdateConfig(updates map[string]interface{}) error {
 	a.queryEngine.UpdateServices(es, ls, cfg)
 	a.docManager.UpdateEmbeddingService(es)
 	a.pendingManager.UpdateServices(es, ls)
+
+	// Refresh OAuth client if any OAuth settings changed
+	for key := range updates {
+		if strings.HasPrefix(key, "oauth.") {
+			a.RefreshOAuthClient()
+			break
+		}
+	}
 	return nil
 }
 

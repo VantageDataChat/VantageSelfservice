@@ -67,6 +67,8 @@ type VectorConfig struct {
 	TopK            int     `json:"top_k"`
 	Threshold       float64 `json:"threshold"`
 	ContentPriority string  `json:"content_priority"` // "image_text" (default) or "text_only"
+	DebugMode       bool    `json:"debug_mode"`       // when true, query responses include search diagnostics
+	TextMatchEnabled bool   `json:"text_match_enabled"` // enable 3-level text similarity processing to save API costs
 }
 
 // SMTPConfig holds SMTP email server configuration.
@@ -135,33 +137,35 @@ func NewConfigManagerWithKey(configPath string, key []byte) (*ConfigManager, err
 	}, nil
 }
 
+
 // DefaultConfig returns a Config populated with default values.
-// Pre-configured with VolcEngine ARK API endpoints (OpenAI-compatible).
+// API keys are intentionally left empty — the admin must configure them after installation.
 func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
 			Port: 8080,
 		},
 		LLM: LLMConfig{
-			Endpoint:    "https://ark.cn-beijing.volces.com/api/v3",
-			APIKey:      "102e16bc-4afd-45bd-9dff-65464072cc1d",
-			ModelName:   "ep-20260128175239-jdkhh",
+			Endpoint:    "",
+			APIKey:      "",
+			ModelName:   "",
 			Temperature: 0.3,
 			MaxTokens:   2048,
 		},
 		Embedding: EmbeddingConfig{
-			Endpoint:      "https://ark.cn-beijing.volces.com/api/v3",
-			APIKey:        "102e16bc-4afd-45bd-9dff-65464072cc1d",
-			ModelName:     "ep-20260211131413-rzhcx",
+			Endpoint:      "",
+			APIKey:        "",
+			ModelName:     "",
 			UseMultimodal: true,
 		},
 		Vector: VectorConfig{
-			DBPath:          "./data/helpdesk.db",
-			ChunkSize:       512,
-			Overlap:         128,
-			TopK:            5,
-			Threshold:       0.5,
-			ContentPriority: "image_text",
+			DBPath:           "./data/helpdesk.db",
+			ChunkSize:        512,
+			Overlap:          128,
+			TopK:             5,
+			Threshold:        0.5,
+			ContentPriority:  "image_text",
+			TextMatchEnabled: true,
 		},
 		OAuth: OAuthConfig{
 			Providers: make(map[string]OAuthProviderConfig),
@@ -282,6 +286,17 @@ func (cm *ConfigManager) Get() *Config {
 		}
 	}
 	return &c
+}
+
+// IsReady returns true if both LLM and Embedding API keys are configured (non-empty).
+func (cm *ConfigManager) IsReady() bool {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	if cm.config == nil {
+		return false
+	}
+	return strings.TrimSpace(cm.config.LLM.APIKey) != "" &&
+		strings.TrimSpace(cm.config.Embedding.APIKey) != ""
 }
 
 // Update applies partial updates to the configuration and saves to disk.
@@ -406,6 +421,18 @@ func (cm *ConfigManager) applyUpdate(key string, val interface{}) error {
 			return errors.New("content_priority must be 'image_text' or 'text_only'")
 		}
 		cm.config.Vector.ContentPriority = s
+	case "vector.debug_mode":
+		b, ok := val.(bool)
+		if !ok {
+			return errors.New("expected boolean")
+		}
+		cm.config.Vector.DebugMode = b
+	case "vector.text_match_enabled":
+		b, ok := val.(bool)
+		if !ok {
+			return errors.New("expected boolean")
+		}
+		cm.config.Vector.TextMatchEnabled = b
 
 	// Admin fields
 	case "admin.username":
@@ -570,6 +597,18 @@ func (cm *ConfigManager) applyOAuthUpdate(key string, val interface{}) error {
 
 	cm.config.OAuth.Providers[providerName] = p
 	return nil
+}
+
+// DeleteOAuthProvider removes an OAuth provider from the config and saves.
+func (cm *ConfigManager) DeleteOAuthProvider(provider string) error {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	if cm.config == nil || cm.config.OAuth.Providers == nil {
+		return nil
+	}
+	delete(cm.config.OAuth.Providers, provider)
+	return cm.saveLocked()
 }
 
 // applyDefaults fills in zero-value fields with defaults.
