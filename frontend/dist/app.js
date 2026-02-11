@@ -2912,7 +2912,7 @@
         if (!tbody) return;
 
         if (!users || users.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" class="admin-table-empty">' + i18n.t('admin_users_empty') + '</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="5" class="admin-table-empty">' + i18n.t('admin_users_empty') + '</td></tr>';
             return;
         }
 
@@ -2920,9 +2920,11 @@
         var html = '';
         for (var i = 0; i < users.length; i++) {
             var u = users[i];
+            var productNames = (u.product_names && u.product_names.length > 0) ? u.product_names.map(escapeHtml).join(', ') : i18n.t('admin_users_all_products');
             html += '<tr>' +
                 '<td>' + escapeHtml(u.username) + '</td>' +
                 '<td>' + escapeHtml(roleMap[u.role] || u.role) + '</td>' +
+                '<td>' + productNames + '</td>' +
                 '<td>' + escapeHtml(u.created_at || '-') + '</td>' +
                 '<td><button class="btn-danger btn-sm" onclick="deleteAdminUser(\'' + escapeHtml(u.id) + '\', \'' + escapeHtml(u.username) + '\')">' + i18n.t('admin_users_delete_btn') + '</button></td>' +
             '</tr>';

@@ -208,10 +208,11 @@ type AdminLoginResponse struct {
 
 // AdminUserInfo holds info about an admin sub-account.
 type AdminUserInfo struct {
-	ID        string `json:"id"`
-	Username  string `json:"username"`
-	Role      string `json:"role"`
-	CreatedAt string `json:"created_at,omitempty"`
+	ID           string   `json:"id"`
+	Username     string   `json:"username"`
+	Role         string   `json:"role"`
+	CreatedAt    string   `json:"created_at,omitempty"`
+	ProductNames []string `json:"product_names,omitempty"`
 }
 
 // IsAdminConfigured returns whether the admin account has been set up.
@@ -312,7 +313,7 @@ func (a *App) AdminLogin(username, password string) (*AdminLoginResponse, error)
 	// Ensure user record exists for FK
 	a.db.Exec(
 		`INSERT OR IGNORE INTO users (id, email, name, provider, provider_id) VALUES (?, ?, ?, ?, ?)`,
-		"admin_"+id, "", username, "admin_sub", id,
+		"admin_"+id, "admin_"+id+"@internal", username, "admin_sub", id,
 	)
 
 	session, err := a.sessionManager.CreateSession("admin_" + id)
@@ -326,11 +327,13 @@ func (a *App) AdminLogin(username, password string) (*AdminLoginResponse, error)
 func (a *App) ensureAdminUser() error {
 	_, err := a.db.Exec(
 		`INSERT OR IGNORE INTO users (id, email, name, provider, provider_id) VALUES (?, ?, ?, ?, ?)`,
-		"admin", "", "管理员", "local", "admin",
+		"admin", "admin@internal", "管理员", "local", "admin",
 	)
 	if err != nil {
 		return fmt.Errorf("ensure admin user: %w", err)
 	}
+	// Fix legacy records with empty email to avoid UNIQUE conflicts
+	a.db.Exec(`UPDATE users SET email = 'admin@internal' WHERE id = 'admin' AND email = ''`)
 	return nil
 }
 
@@ -776,6 +779,27 @@ func (a *App) ListAdminUsers() ([]AdminUserInfo, error) {
 		}
 		users = append(users, u)
 	}
+
+	// Fetch product names for each admin user
+	for i := range users {
+		pRows, err := a.db.Query(
+			`SELECT p.name FROM products p
+			 INNER JOIN admin_user_products aup ON p.id = aup.product_id
+			 WHERE aup.admin_user_id = ? ORDER BY p.name`, users[i].ID)
+		if err != nil {
+			continue
+		}
+		var names []string
+		for pRows.Next() {
+			var name string
+			if err := pRows.Scan(&name); err == nil {
+				names = append(names, name)
+			}
+		}
+		pRows.Close()
+		users[i].ProductNames = names
+	}
+
 	return users, nil
 }
 
