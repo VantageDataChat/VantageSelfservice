@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"helpdesk/internal/config"
@@ -241,9 +242,14 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 		}, nil
 	}
 
+	// Step 4.5: Enrich search results with images from the same documents
+	// If search results don't include image chunks, look up image URLs
+	// from the same documents in the database.
+	docImages := qe.findDocumentImages(results)
+
 	// Step 5: Build context from search results and call LLM
 	context := make([]string, len(results))
-	hasImages := false
+	hasImages := len(docImages) > 0
 	for i, r := range results {
 		if r.ImageURL != "" {
 			context[i] = r.ChunkText + " (图片已附带，将自动展示给用户)"
@@ -266,6 +272,14 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 		return nil, fmt.Errorf("failed to generate answer: %w", err)
 	}
 
+	// Step 5.5: Detect "unable to answer" responses and create pending question
+	isPending := false
+	if isUnableToAnswer(answer) {
+		log.Printf("[Query] LLM answer indicates unable to answer, creating pending question")
+		_ = qe.createPendingQuestion(req.Question, req.UserID)
+		isPending = true
+	}
+
 	// Step 6: Build source references
 	sources := make([]SourceRef, len(results))
 	for i, r := range results {
@@ -281,10 +295,67 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 		}
 	}
 
+	// Append document images that weren't already in search results
+	for _, img := range docImages {
+		sources = append(sources, img)
+	}
+
 	return &QueryResponse{
-		Answer:  answer,
-		Sources: sources,
+		Answer:    answer,
+		Sources:   sources,
+		IsPending: isPending,
 	}, nil
+}
+
+// findDocumentImages queries the database for image chunks from the same documents
+// as the search results. Returns image SourceRefs that aren't already in the results.
+func (qe *QueryEngine) findDocumentImages(results []vectorstore.SearchResult) []SourceRef {
+	// Check if results already have images
+	for _, r := range results {
+		if r.ImageURL != "" {
+			return nil // already have images, no need to enrich
+		}
+	}
+
+	// Collect unique document IDs
+	docIDs := make(map[string]string) // docID -> docName
+	for _, r := range results {
+		if r.DocumentID != "" {
+			docIDs[r.DocumentID] = r.DocumentName
+		}
+	}
+	if len(docIDs) == 0 {
+		return nil
+	}
+
+	var images []SourceRef
+	for docID, docName := range docIDs {
+		rows, err := qe.db.Query(
+			`SELECT image_url, chunk_text FROM chunks WHERE document_id = ? AND image_url != '' AND image_url IS NOT NULL`,
+			docID,
+		)
+		if err != nil {
+			continue
+		}
+		for rows.Next() {
+			var imgURL, chunkText string
+			if err := rows.Scan(&imgURL, &chunkText); err != nil {
+				continue
+			}
+			if imgURL == "" {
+				continue
+			}
+			images = append(images, SourceRef{
+				DocumentName: docName,
+				ChunkIndex:   -1,
+				Snippet:      chunkText,
+				ImageURL:     imgURL,
+			})
+		}
+		rows.Close()
+	}
+
+	return images
 }
 
 // createPendingQuestion inserts a new pending question record into the database.
@@ -299,6 +370,32 @@ func (qe *QueryEngine) createPendingQuestion(question, userID string) error {
 	)
 	return err
 }
+
+// isUnableToAnswer detects if the LLM response indicates it could not find
+// the answer in the reference materials, in both Chinese and English.
+func isUnableToAnswer(answer string) bool {
+	lower := strings.ToLower(answer)
+	patterns := []string{
+		// Chinese patterns
+		"未提及", "未找到", "没有相关信息", "没有提及", "未涉及",
+		"没有涉及", "无法从参考资料", "参考资料中没有",
+		"没有找到相关", "未包含", "没有包含",
+		"无相关信息", "暂无相关", "未能找到",
+		// English patterns
+		"not mentioned", "no relevant information",
+		"not found in the reference", "no information available",
+		"does not contain", "do not have information",
+		"not covered in the reference", "unable to find",
+		"not available in the provided",
+	}
+	for _, p := range patterns {
+		if strings.Contains(lower, strings.ToLower(p)) {
+			return true
+		}
+	}
+	return false
+}
+
 
 // generateID creates a random hex string for use as a unique identifier.
 func generateID() (string, error) {

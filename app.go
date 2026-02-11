@@ -744,18 +744,20 @@ func (a *App) AddKnowledgeEntry(req KnowledgeEntryRequest) error {
 		return fmt.Errorf("存储文本失败: %w", err)
 	}
 
-	// Embed and store images
-	cfg := a.configManager.Get()
-	if cfg.Embedding.UseMultimodal && len(req.ImageURLs) > 0 {
+	// Store image references — always create text-searchable chunks with image URLs
+	if len(req.ImageURLs) > 0 {
 		es := a.docManager.GetEmbeddingService()
 		for i, imgURL := range req.ImageURLs {
 			imgURL = strings.TrimSpace(imgURL)
 			if imgURL == "" {
 				continue
 			}
-			vec, err := es.EmbedImageURL(imgURL)
+			// Create a text-embedded chunk that carries the image URL
+			// so text-based search can find and return the image
+			imgText := fmt.Sprintf("[图片: %s] %s", title, content)
+			vec, err := es.Embed(imgText)
 			if err != nil {
-				fmt.Printf("Warning: failed to embed image %d: %v\n", i, err)
+				fmt.Printf("Warning: failed to embed image text %d: %v\n", i, err)
 				continue
 			}
 			imgChunk := []vectorstore.VectorChunk{{
@@ -767,7 +769,34 @@ func (a *App) AddKnowledgeEntry(req KnowledgeEntryRequest) error {
 				ImageURL:     imgURL,
 			}}
 			if err := a.docManager.StoreChunks(docID, imgChunk); err != nil {
-				fmt.Printf("Warning: failed to store image vector %d: %v\n", i, err)
+				fmt.Printf("Warning: failed to store image chunk %d: %v\n", i, err)
+			}
+		}
+
+		// Additionally, if multimodal embedding is available, also store image-embedded vectors
+		cfg := a.configManager.Get()
+		if cfg.Embedding.UseMultimodal {
+			for i, imgURL := range req.ImageURLs {
+				imgURL = strings.TrimSpace(imgURL)
+				if imgURL == "" {
+					continue
+				}
+				vec, err := es.EmbedImageURL(imgURL)
+				if err != nil {
+					fmt.Printf("Warning: failed to embed image %d multimodal: %v\n", i, err)
+					continue
+				}
+				imgChunk := []vectorstore.VectorChunk{{
+					ChunkText:    fmt.Sprintf("[图片: %s]", title),
+					ChunkIndex:   2000 + i,
+					DocumentID:   docID,
+					DocumentName: docName,
+					Vector:       vec,
+					ImageURL:     imgURL,
+				}}
+				if err := a.docManager.StoreChunks(docID, imgChunk); err != nil {
+					fmt.Printf("Warning: failed to store multimodal image vector %d: %v\n", i, err)
+				}
 			}
 		}
 	}
