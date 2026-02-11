@@ -32,6 +32,7 @@ type AdminAnswerRequest struct {
 	ImageData  []byte   `json:"image_data,omitempty"`
 	URL        string   `json:"url,omitempty"`
 	ImageURLs  []string `json:"image_urls,omitempty"`
+	IsEdit     bool     `json:"is_edit,omitempty"`
 }
 
 // PendingQuestionManager handles the lifecycle of pending questions.
@@ -188,8 +189,15 @@ func (pm *PendingQuestionManager) AnswerQuestion(req AdminAnswerRequest) error {
 	if err != nil {
 		return fmt.Errorf("failed to query pending question: %w", err)
 	}
-	if status == "answered" {
+	if status == "answered" && !req.IsEdit {
 		return fmt.Errorf("question already answered: %s", req.QuestionID)
+	}
+
+	// If editing, clean up old vector store data first
+	if status == "answered" && req.IsEdit {
+		docID := "pending-answer-" + req.QuestionID
+		_ = pm.vectorStore.DeleteByDocID(docID)
+		_, _ = pm.db.Exec(`DELETE FROM documents WHERE id = ?`, docID)
 	}
 
 	// Step 2: Store the answer text in the record

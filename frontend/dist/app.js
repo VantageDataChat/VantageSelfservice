@@ -1215,6 +1215,8 @@
 
             if (q.status !== 'answered') {
                 html += '<button class="btn-primary btn-sm admin-answer-btn" data-id="' + escapeHtml(q.id) + '" data-question="' + escapeHtml(q.question || '') + '">回答</button>';
+            } else {
+                html += '<button class="btn-secondary btn-sm admin-edit-answer-btn" data-id="' + escapeHtml(q.id) + '" data-question="' + escapeHtml(q.question || '') + '" data-answer="' + escapeHtml(q.answer || '') + '">编辑</button>';
             }
 
             html += ' <button class="btn-danger btn-sm admin-delete-pending-btn" data-id="' + escapeHtml(q.id) + '">删除</button>';
@@ -1252,11 +1254,26 @@
                 });
             })(deleteBtns[k]);
         }
+
+        // Bind edit button clicks
+        var editBtns = container.querySelectorAll('.admin-edit-answer-btn');
+        for (var m = 0; m < editBtns.length; m++) {
+            (function(btn) {
+                btn.addEventListener('click', function() {
+                    showAnswerDialog(
+                        btn.getAttribute('data-id'),
+                        btn.getAttribute('data-question'),
+                        btn.getAttribute('data-answer')
+                    );
+                });
+            })(editBtns[m]);
+        }
     }
 
     // --- Answer Dialog ---
 
     var answerImageURLs = [];
+    var answerIsEdit = false;
 
     function initAnswerImageZone() {
         var area = document.getElementById('answer-image-upload-area');
@@ -1371,12 +1388,13 @@
         xhr.send(formData);
     }
 
-    window.showAnswerDialog = function (questionId, questionText) {
+    window.showAnswerDialog = function (questionId, questionText, existingAnswer) {
         adminAnswerTargetId = questionId;
+        answerIsEdit = !!existingAnswer;
         var textEl = document.getElementById('admin-answer-question-text');
         if (textEl) textEl.textContent = questionText;
         var answerInput = document.getElementById('admin-answer-text');
-        if (answerInput) answerInput.value = '';
+        if (answerInput) answerInput.value = existingAnswer || '';
         var urlInput = document.getElementById('admin-answer-url');
         if (urlInput) urlInput.value = '';
         answerImageURLs = [];
@@ -1389,6 +1407,7 @@
 
     window.closeAnswerDialog = function () {
         adminAnswerTargetId = null;
+        answerIsEdit = false;
         answerImageURLs = [];
         var preview = document.getElementById('answer-image-preview');
         if (preview) preview.innerHTML = '';
@@ -1418,7 +1437,8 @@
                 question_id: adminAnswerTargetId,
                 text: text.trim(),
                 url: url.trim(),
-                image_urls: imageUrls
+                image_urls: imageUrls,
+                is_edit: answerIsEdit
             })
         })
         .then(function (res) {
@@ -1470,6 +1490,8 @@
                 setVal('cfg-vec-overlap', vec.overlap);
                 setVal('cfg-vec-topk', vec.top_k);
                 setVal('cfg-vec-threshold', vec.threshold);
+                var cpSelect = document.getElementById('cfg-vec-content-priority');
+                if (cpSelect) cpSelect.value = vec.content_priority || 'image_text';
 
                 setVal('cfg-admin-login-route', admin.login_route || '/admin');
 
@@ -1595,6 +1617,8 @@
         if (vecOverlap !== '') updates['vector.overlap'] = parseInt(vecOverlap, 10);
         if (vecTopK !== '') updates['vector.top_k'] = parseInt(vecTopK, 10);
         if (vecThreshold !== '') updates['vector.threshold'] = parseFloat(vecThreshold);
+        var vecContentPriority = getVal('cfg-vec-content-priority');
+        if (vecContentPriority) updates['vector.content_priority'] = vecContentPriority;
 
         var adminLoginRouteVal = getVal('cfg-admin-login-route');
         if (adminLoginRouteVal) {

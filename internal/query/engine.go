@@ -225,6 +225,38 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 		}
 	}
 
+	// Step 3.5: Reorder results based on content priority setting
+	if len(results) > 1 && qe.config != nil {
+		priority := qe.config.Vector.ContentPriority
+		if priority == "image_text" {
+			// Boost results that have images to the top (stable sort preserving score order within group)
+			reordered := make([]vectorstore.SearchResult, 0, len(results))
+			var textOnly []vectorstore.SearchResult
+			for _, r := range results {
+				if r.ImageURL != "" {
+					reordered = append(reordered, r)
+				} else {
+					textOnly = append(textOnly, r)
+				}
+			}
+			results = append(reordered, textOnly...)
+			log.Printf("[Query] content_priority=image_text, image_results=%d, text_results=%d", len(reordered), len(textOnly))
+		} else if priority == "text_only" {
+			// Boost pure text results to the top
+			reordered := make([]vectorstore.SearchResult, 0, len(results))
+			var withImage []vectorstore.SearchResult
+			for _, r := range results {
+				if r.ImageURL == "" {
+					reordered = append(reordered, r)
+				} else {
+					withImage = append(withImage, r)
+				}
+			}
+			results = append(reordered, withImage...)
+			log.Printf("[Query] content_priority=text_only, text_results=%d, image_results=%d", len(reordered), len(withImage))
+		}
+	}
+
 	// Step 4: If still no results, create pending question
 	if len(results) == 0 {
 		// Check for existing similar pending question first

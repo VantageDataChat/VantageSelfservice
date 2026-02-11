@@ -1,0 +1,13 @@
+# Build artifacts
+deploy.tar.gz
+*.exe
+helpdesk
+
+# Upload data (test/runtime files)
+data/uploads/
+data/helpdesk.db
+data/encryption.key
+internal/document/data/uploads/
+
+# IDE
+.vscode/

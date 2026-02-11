@@ -368,6 +368,14 @@
                                             <input type="number" id="cfg-vec-threshold" step="0.01" min="0" max="1" placeholder="0.7">
                                         </div>
                                     </div>
+                                    <div class="admin-form-row">
+                                        <label>内容优先级</label>
+                                        <select id="cfg-vec-content-priority">
+                                            <option value="image_text">优先图文（有图片的结果优先）</option>
+                                            <option value="text_only">优先纯文字（纯文本结果优先）</option>
+                                        </select>
+                                        <span class="admin-form-hint">设置回答时优先使用图文内容还是纯文字内容</span>
+                                    </div>
                                 </fieldset>
 
                                 <fieldset class="admin-fieldset">

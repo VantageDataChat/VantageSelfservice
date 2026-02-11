@@ -60,11 +60,12 @@ type EmbeddingConfig struct {
 
 // VectorConfig holds vector store configuration.
 type VectorConfig struct {
-	DBPath    string  `json:"db_path"`
-	ChunkSize int     `json:"chunk_size"`
-	Overlap   int     `json:"overlap"`
-	TopK      int     `json:"top_k"`
-	Threshold float64 `json:"threshold"`
+	DBPath          string  `json:"db_path"`
+	ChunkSize       int     `json:"chunk_size"`
+	Overlap         int     `json:"overlap"`
+	TopK            int     `json:"top_k"`
+	Threshold       float64 `json:"threshold"`
+	ContentPriority string  `json:"content_priority"` // "image_text" (default) or "text_only"
 }
 
 // SMTPConfig holds SMTP email server configuration.
@@ -154,11 +155,12 @@ func DefaultConfig() *Config {
 			UseMultimodal: true,
 		},
 		Vector: VectorConfig{
-			DBPath:    "./data/helpdesk.db",
-			ChunkSize: 512,
-			Overlap:   128,
-			TopK:      5,
-			Threshold: 0.5,
+			DBPath:          "./data/helpdesk.db",
+			ChunkSize:       512,
+			Overlap:         128,
+			TopK:            5,
+			Threshold:       0.5,
+			ContentPriority: "image_text",
 		},
 		OAuth: OAuthConfig{
 			Providers: make(map[string]OAuthProviderConfig),
@@ -394,6 +396,15 @@ func (cm *ConfigManager) applyUpdate(key string, val interface{}) error {
 			return err
 		}
 		cm.config.Vector.Threshold = f
+	case "vector.content_priority":
+		s, ok := val.(string)
+		if !ok {
+			return errors.New("expected string")
+		}
+		if s != "image_text" && s != "text_only" {
+			return errors.New("content_priority must be 'image_text' or 'text_only'")
+		}
+		cm.config.Vector.ContentPriority = s
 
 	// Admin fields
 	case "admin.username":
@@ -591,6 +602,9 @@ func (cm *ConfigManager) applyDefaults(cfg *Config) {
 	}
 	if cfg.Vector.Threshold == 0 {
 		cfg.Vector.Threshold = defaults.Vector.Threshold
+	}
+	if cfg.Vector.ContentPriority == "" {
+		cfg.Vector.ContentPriority = defaults.Vector.ContentPriority
 	}
 	if cfg.OAuth.Providers == nil {
 		cfg.OAuth.Providers = make(map[string]OAuthProviderConfig)
