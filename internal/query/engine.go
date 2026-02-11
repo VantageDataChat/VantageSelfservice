@@ -70,6 +70,58 @@ type DebugSearchHit struct {
 	DimMatch bool    `json:"dim_match"`
 }
 
+// embeddingCacheEntry holds a cached embedding vector with expiry.
+type embeddingCacheEntry struct {
+	vector    []float64
+	timestamp time.Time
+}
+
+// embeddingCache provides a simple LRU cache for embedding API results.
+// Avoids redundant API calls for repeated or similar questions.
+type embeddingCache struct {
+	mu      sync.Mutex
+	entries map[string]embeddingCacheEntry
+	order   []string
+	maxSize int
+	ttl     time.Duration
+}
+
+func newEmbeddingCache(maxSize int, ttl time.Duration) *embeddingCache {
+	return &embeddingCache{
+		entries: make(map[string]embeddingCacheEntry, maxSize),
+		order:   make([]string, 0, maxSize),
+		maxSize: maxSize,
+		ttl:     ttl,
+	}
+}
+
+func (ec *embeddingCache) get(text string) ([]float64, bool) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	entry, ok := ec.entries[text]
+	if !ok || time.Since(entry.timestamp) > ec.ttl {
+		if ok {
+			delete(ec.entries, text)
+		}
+		return nil, false
+	}
+	return entry.vector, true
+}
+
+func (ec *embeddingCache) put(text string, vector []float64) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	if _, ok := ec.entries[text]; !ok {
+		if len(ec.order) >= ec.maxSize {
+			oldest := ec.order[0]
+			ec.order = ec.order[1:]
+			delete(ec.entries, oldest)
+		}
+		ec.order = append(ec.order, text)
+	}
+	ec.entries[text] = embeddingCacheEntry{vector: vector, timestamp: time.Now()}
+}
+
 // QueryEngine orchestrates the RAG query flow: embed → search → LLM generate or pending.
 type QueryEngine struct {
 	mu               sync.RWMutex
@@ -78,6 +130,7 @@ type QueryEngine struct {
 	llmService       llm.LLMService
 	db               *sql.DB
 	config           *config.Config
+	embedCache       *embeddingCache // caches embedding API results to avoid redundant calls
 }
 
 // NewQueryEngine creates a new QueryEngine with the given dependencies.
@@ -94,7 +147,21 @@ func NewQueryEngine(
 		llmService:       llmService,
 		db:               db,
 		config:           cfg,
+		embedCache:       newEmbeddingCache(512, 10*time.Minute),
 	}
+}
+
+// cachedEmbed returns the embedding for text, using cache when available.
+func (qe *QueryEngine) cachedEmbed(text string, es embedding.EmbeddingService) ([]float64, error) {
+	if vec, ok := qe.embedCache.get(text); ok {
+		return vec, nil
+	}
+	vec, err := es.Embed(text)
+	if err != nil {
+		return nil, err
+	}
+	qe.embedCache.put(text, vec)
+	return vec, nil
 }
 
 // UpdateServices replaces the embedding and LLM services (used after config change).
@@ -317,7 +384,7 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 			if debugMode {
 				dbg.Steps = append(dbg.Steps, "TextMatch: Level 2 — confirming with embedding (embedding API only)")
 			}
-			queryVector, embErr := es.Embed(req.Question)
+			queryVector, embErr := qe.cachedEmbed(req.Question, es)
 			if embErr == nil {
 				vecResults, vecErr := qe.vectorStore.Search(queryVector, cfg.Vector.TopK, cfg.Vector.Threshold, req.ProductID)
 				if vecErr == nil && len(vecResults) > 0 && vecResults[0].Score >= 0.75 {
@@ -371,7 +438,7 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 	// ===== Level 3: Full RAG Pipeline =====
 
 	// Step 1: Embed the question
-	queryVector, err := es.Embed(req.Question)
+	queryVector, err := qe.cachedEmbed(req.Question, es)
 	if err != nil {
 		return nil, fmt.Errorf("failed to embed question: %w", err)
 	}
@@ -879,22 +946,46 @@ func mergeSearchResults(a, b []vectorstore.SearchResult, topK int) []vectorstore
 	return merged
 }
 // enrichVideoTimeInfo queries the video_segments table to fill in StartTime and EndTime
-// for search results that correspond to video content. The chunk_id in video_segments
-// is formatted as "{docID}-{chunkIndex}".
+// for search results that correspond to video content.
+// Uses a single batch query instead of per-result queries for better performance.
 func (qe *QueryEngine) enrichVideoTimeInfo(results []vectorstore.SearchResult) []vectorstore.SearchResult {
 	if qe.db == nil || len(results) == 0 {
 		return results
 	}
+
+	// Build batch query with all chunk IDs
+	chunkIDs := make([]string, len(results))
+	chunkIDToIdx := make(map[string][]int, len(results))
 	for i, r := range results {
-		chunkID := fmt.Sprintf("%s-%d", r.DocumentID, r.ChunkIndex)
+		id := fmt.Sprintf("%s-%d", r.DocumentID, r.ChunkIndex)
+		chunkIDs[i] = id
+		chunkIDToIdx[id] = append(chunkIDToIdx[id], i)
+	}
+
+	// Build IN clause: SELECT chunk_id, start_time, end_time FROM video_segments WHERE chunk_id IN (?,?,...)
+	placeholders := make([]string, len(chunkIDs))
+	args := make([]interface{}, len(chunkIDs))
+	for i, id := range chunkIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := `SELECT chunk_id, start_time, end_time FROM video_segments WHERE chunk_id IN (` + strings.Join(placeholders, ",") + `)`
+	rows, err := qe.db.Query(query, args...)
+	if err != nil {
+		return results
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var chunkID string
 		var startTime, endTime float64
-		err := qe.db.QueryRow(
-			`SELECT start_time, end_time FROM video_segments WHERE chunk_id = ?`,
-			chunkID,
-		).Scan(&startTime, &endTime)
-		if err == nil {
-			results[i].StartTime = startTime
-			results[i].EndTime = endTime
+		if err := rows.Scan(&chunkID, &startTime, &endTime); err != nil {
+			continue
+		}
+		for _, idx := range chunkIDToIdx[chunkID] {
+			results[idx].StartTime = startTime
+			results[idx].EndTime = endTime
 		}
 	}
 	return results

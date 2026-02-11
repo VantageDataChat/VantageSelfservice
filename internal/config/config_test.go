@@ -2,10 +2,14 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"pgregory.net/rapid"
 )
 
 func testKey() []byte {
@@ -390,4 +394,60 @@ func TestVideoConfig_ApplyDefaultsOnLoad(t *testing.T) {
 	if cfg.Video.WhisperModel != "base" {
 		t.Errorf("Video.WhisperModel = %q, want \"base\" (default)", cfg.Video.WhisperModel)
 	}
+}
+
+// TestProperty3_VideoConfigPersistenceRoundTrip 验证视频配置持久化往返一致性。
+// 对于任意有效的 VideoConfig 值，通过 ConfigManager 更新后再读取，应返回与写入值等价的配置。
+//
+// **Feature: video-retrieval, Property 3: 视频配置持久化往返一致性**
+// **Validates: Requirements 1.3**
+func TestProperty3_VideoConfigPersistenceRoundTrip(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		ffmpegPath := rapid.StringMatching(`[a-zA-Z0-9/._-]{0,50}`).Draw(rt, "ffmpeg_path")
+		whisperPath := rapid.StringMatching(`[a-zA-Z0-9/._-]{0,50}`).Draw(rt, "whisper_path")
+		keyframeInterval := rapid.IntRange(1, 120).Draw(rt, "keyframe_interval")
+		whisperModel := rapid.SampledFrom([]string{"tiny", "base", "small", "medium", "large"}).Draw(rt, "whisper_model")
+
+		path := filepath.Join(t.TempDir(), fmt.Sprintf("config-%d.json", time.Now().UnixNano()))
+		cm, err := NewConfigManagerWithKey(path, testKey())
+		if err != nil {
+			rt.Fatalf("NewConfigManagerWithKey: %v", err)
+		}
+		if err := cm.Load(); err != nil {
+			rt.Fatalf("Load: %v", err)
+		}
+
+		updates := map[string]interface{}{
+			"video.ffmpeg_path":       ffmpegPath,
+			"video.whisper_path":      whisperPath,
+			"video.keyframe_interval": keyframeInterval,
+			"video.whisper_model":     whisperModel,
+		}
+		if err := cm.Update(updates); err != nil {
+			rt.Fatalf("Update: %v", err)
+		}
+
+		// 重新加载配置
+		cm2, err := NewConfigManagerWithKey(path, testKey())
+		if err != nil {
+			rt.Fatalf("NewConfigManagerWithKey: %v", err)
+		}
+		if err := cm2.Load(); err != nil {
+			rt.Fatalf("Load: %v", err)
+		}
+
+		cfg := cm2.Get()
+		if cfg.Video.FFmpegPath != ffmpegPath {
+			rt.Errorf("FFmpegPath: got %q, want %q", cfg.Video.FFmpegPath, ffmpegPath)
+		}
+		if cfg.Video.WhisperPath != whisperPath {
+			rt.Errorf("WhisperPath: got %q, want %q", cfg.Video.WhisperPath, whisperPath)
+		}
+		if cfg.Video.KeyframeInterval != keyframeInterval {
+			rt.Errorf("KeyframeInterval: got %d, want %d", cfg.Video.KeyframeInterval, keyframeInterval)
+		}
+		if cfg.Video.WhisperModel != whisperModel {
+			rt.Errorf("WhisperModel: got %q, want %q", cfg.Video.WhisperModel, whisperModel)
+		}
+	})
 }

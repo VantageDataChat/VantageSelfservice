@@ -8,12 +8,15 @@ import (
 	"os"
 	"testing"
 	"testing/quick"
+	"time"
 
 	"helpdesk/internal/chunker"
 	"helpdesk/internal/config"
 	"helpdesk/internal/db"
 	"helpdesk/internal/parser"
 	"helpdesk/internal/vectorstore"
+
+	"pgregory.net/rapid"
 )
 
 // mockEmbeddingService implements embedding.EmbeddingService for testing.
@@ -861,4 +864,113 @@ func TestProperty9_DocumentListProductFiltering(t *testing.T) {
 	if err := quick.Check(f, &quick.Config{MaxCount: 100}); err != nil {
 		t.Error(err)
 	}
+}
+
+// TestProperty2_VideoUploadRejectedWhenUnconfigured 验证未配置时拒绝视频上传。
+// 对于任意视频上传请求，当 VideoConfig 的 ffmpeg_path 和 whisper_path 均为空时，
+// DocumentManager 应拒绝该请求并返回错误。
+//
+// **Feature: video-retrieval, Property 2: 未配置时拒绝视频上传**
+// **Validates: Requirements 1.2**
+func TestProperty2_VideoUploadRejectedWhenUnconfigured(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		videoType := rapid.SampledFrom([]string{"mp4", "avi", "mkv", "mov", "webm"}).Draw(rt, "video_type")
+		fileName := rapid.StringMatching(`[a-zA-Z0-9]{1,20}`).Draw(rt, "file_name") + "." + videoType
+		productID := rapid.StringMatching(`[a-zA-Z0-9-]{0,20}`).Draw(rt, "product_id")
+
+		database, cleanup := setupTestDB(t)
+		defer cleanup()
+
+		dm := newTestManager(t, database, &mockEmbeddingService{})
+		// 确保 VideoConfig 为空（默认状态）
+		dm.SetVideoConfig(config.VideoConfig{
+			FFmpegPath:  "",
+			WhisperPath: "",
+		})
+
+		doc, err := dm.UploadFile(UploadFileRequest{
+			FileName:  fileName,
+			FileData:  []byte("fake-video-data"),
+			FileType:  videoType,
+			ProductID: productID,
+		})
+		if err != nil {
+			rt.Fatalf("UploadFile should not return error, got: %v", err)
+		}
+		if doc.Status != "failed" {
+			rt.Errorf("expected status 'failed', got %q", doc.Status)
+		}
+		expectedErr := "视频检索功能未启用，请先在设置中配置 ffmpeg 和 whisper 路径"
+		if doc.Error != expectedErr {
+			rt.Errorf("expected error %q, got %q", expectedErr, doc.Error)
+		}
+	})
+}
+
+// TestProperty6_VideoDeleteCascade 验证视频删除级联清理。
+// 对于任意已处理的视频文档，删除该文档后，video_segments 表中不应存在该文档 ID 的任何记录。
+//
+// **Feature: video-retrieval, Property 6: 视频删除级联清理**
+// **Validates: Requirements 4.4**
+func TestProperty6_VideoDeleteCascade(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		segCount := rapid.IntRange(1, 10).Draw(rt, "segment_count")
+
+		database, cleanup := setupTestDB(t)
+		defer cleanup()
+
+		dm := newTestManager(t, database, &mockEmbeddingService{})
+
+		docID := fmt.Sprintf("video-doc-%d", time.Now().UnixNano())
+
+		// 插入文档记录
+		_, err := database.Exec(
+			`INSERT INTO documents (id, name, type, status, created_at) VALUES (?, ?, ?, ?, datetime('now'))`,
+			docID, "test.mp4", "video", "success",
+		)
+		if err != nil {
+			rt.Fatalf("insert document: %v", err)
+		}
+
+		// 插入随机数量的 video_segments 记录
+		for i := 0; i < segCount; i++ {
+			segType := "transcript"
+			if i%3 == 0 {
+				segType = "keyframe"
+			}
+			segID := fmt.Sprintf("seg-%s-%d", docID, i)
+			chunkID := fmt.Sprintf("%s-%d", docID, i)
+			_, err := database.Exec(
+				`INSERT INTO video_segments (id, document_id, segment_type, start_time, end_time, content, chunk_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				segID, docID, segType, float64(i)*5.0, float64(i)*5.0+5.0, "content", chunkID,
+			)
+			if err != nil {
+				rt.Fatalf("insert video_segment: %v", err)
+			}
+		}
+
+		// 验证 segments 存在
+		var count int
+		database.QueryRow(`SELECT COUNT(*) FROM video_segments WHERE document_id = ?`, docID).Scan(&count)
+		if count != segCount {
+			rt.Fatalf("expected %d segments before delete, got %d", segCount, count)
+		}
+
+		// 删除文档
+		if err := dm.DeleteDocument(docID); err != nil {
+			rt.Fatalf("DeleteDocument: %v", err)
+		}
+
+		// 验证 video_segments 已被级联删除
+		database.QueryRow(`SELECT COUNT(*) FROM video_segments WHERE document_id = ?`, docID).Scan(&count)
+		if count != 0 {
+			rt.Errorf("expected 0 video_segments after delete, got %d", count)
+		}
+
+		// 验证文档记录也已删除
+		database.QueryRow(`SELECT COUNT(*) FROM documents WHERE id = ?`, docID).Scan(&count)
+		if count != 0 {
+			rt.Errorf("expected 0 documents after delete, got %d", count)
+		}
+	})
 }

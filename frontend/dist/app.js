@@ -14,6 +14,19 @@
     var loginCaptchaId = '';
     var registerCaptchaId = '';
     var adminCaptchaId = '';
+    var urlProductName = ''; // product name from URL query string, e.g. ?askflow
+
+    // Parse URL query string for product name: ?productName (bare key, no value)
+    (function () {
+        var search = window.location.search;
+        if (search && search.length > 1) {
+            var raw = search.substring(1); // remove leading '?'
+            // If it's a bare key (no '=' sign), treat it as product name
+            if (raw.indexOf('=') === -1 && raw.indexOf('&') === -1) {
+                urlProductName = decodeURIComponent(raw);
+            }
+        }
+    })();
 
     // --- Routing ---
 
@@ -252,8 +265,23 @@
                     opt.textContent = products[i].name;
                     select.appendChild(opt);
                 }
-                // Auto-select if only one product
-                if (products.length === 1) {
+
+                // URL-based product auto-selection: match by name (case-insensitive)
+                var urlMatched = false;
+                if (urlProductName) {
+                    var lowerURL = urlProductName.toLowerCase();
+                    for (var j = 0; j < products.length; j++) {
+                        if (products[j].name.toLowerCase() === lowerURL) {
+                            select.value = products[j].id;
+                            select.disabled = true;
+                            urlMatched = true;
+                            break;
+                        }
+                    }
+                }
+
+                // Auto-select if only one product (and not already matched by URL)
+                if (!urlMatched && products.length === 1) {
                     select.value = products[0].id;
                 }
                 selector.classList.remove('hidden');

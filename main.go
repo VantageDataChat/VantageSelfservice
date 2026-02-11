@@ -31,6 +31,7 @@ import (
 	"helpdesk/internal/product"
 	"helpdesk/internal/query"
 	"helpdesk/internal/vectorstore"
+	"helpdesk/internal/video"
 )
 
 func main() {
@@ -65,6 +66,20 @@ func main() {
 	ls := llm.NewAPILLMService(cfg.LLM.Endpoint, cfg.LLM.APIKey, cfg.LLM.ModelName, cfg.LLM.Temperature, cfg.LLM.MaxTokens)
 	dm := document.NewDocumentManager(dp, tc, es, vs, database)
 	dm.SetVideoConfig(cfg.Video)
+
+	// 视频依赖检测
+	if cfg.Video.FFmpegPath != "" || cfg.Video.WhisperPath != "" {
+		vp := video.NewParser(cfg.Video)
+		ffmpegOK, whisperOK := vp.CheckDependencies()
+		statusStr := func(ok bool) string {
+			if ok {
+				return "可用"
+			}
+			return "不可用"
+		}
+		log.Printf("视频检索: ffmpeg=%s, whisper=%s", statusStr(ffmpegOK), statusStr(whisperOK))
+	}
+
 	ps := product.NewProductService(database)
 
 	// Check for CLI subcommands
@@ -78,6 +93,9 @@ func main() {
 			return
 		case "restore":
 			runRestore(os.Args[2:])
+			return
+		case "products":
+			runListProducts(ps)
 			return
 		case "help", "-h", "--help":
 			printUsage()
@@ -156,6 +174,7 @@ func printUsage() {
 	fmt.Println(`用法:
   helpdesk                                        启动 HTTP 服务（默认端口 8080）
   helpdesk import [--product <product_id>] <目录> [...]  批量导入目录下的文档到知识库
+  helpdesk products                                列出所有产品及产品 ID
   helpdesk backup [选项]                           备份整站数据
   helpdesk restore <备份文件>                       从备份恢复数据
   helpdesk help                                   显示此帮助信息
@@ -174,6 +193,12 @@ import 命令:
     helpdesk import ./docs
     helpdesk import ./docs ./manuals /path/to/files
     helpdesk import --product abc123 ./docs
+
+products 命令:
+  列出系统中所有产品的 ID、名称和描述，方便在 import 等命令中使用产品 ID。
+
+  示例:
+    helpdesk products
 
 backup 命令:
   将整站数据按类型分层备份为 tar.gz 归档。
@@ -429,6 +454,30 @@ func runRestore(args []string) {
 		os.Exit(1)
 	}
 }
+
+// runListProducts lists all products with their IDs.
+func runListProducts(ps *product.ProductService) {
+	products, err := ps.List()
+	if err != nil {
+		fmt.Printf("查询产品列表失败: %v\n", err)
+		os.Exit(1)
+	}
+	if len(products) == 0 {
+		fmt.Println("暂无产品")
+		return
+	}
+	fmt.Printf("%-34s  %-20s  %s\n", "产品 ID", "名称", "描述")
+	fmt.Println(strings.Repeat("-", 80))
+	for _, p := range products {
+		desc := p.Description
+		if len(desc) > 30 {
+			desc = desc[:30] + "..."
+		}
+		fmt.Printf("%-34s  %-20s  %s\n", p.ID, p.Name, desc)
+	}
+	fmt.Printf("\n共 %d 个产品\n", len(products))
+}
+
 
 
 func registerAPIHandlers(app *App) {

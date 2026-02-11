@@ -588,3 +588,72 @@ func TestQuery_VideoTimeInfoPropagatedToSourceRef(t *testing.T) {
 		t.Errorf("expected SourceRef.EndTime=15.0, got %f", resp.Sources[0].EndTime)
 	}
 }
+
+// TestProperty7_VideoSearchTimeInfo 验证视频检索结果包含时间定位。
+// 对于任意检索结果，若该结果来源于视频文档（通过 video_segments 表关联），
+// 则结果中的 StartTime 和 EndTime 字段应包含有效的时间值（非零）。
+//
+// **Feature: video-retrieval, Property 7: 视频检索结果包含时间定位**
+// **Validates: Requirements 5.1, 5.2**
+func TestProperty7_VideoSearchTimeInfo(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		segCount := rapid.IntRange(1, 10).Draw(rt, "segment_count")
+		docID := fmt.Sprintf("video-doc-%d", rapid.IntRange(1, 999999).Draw(rt, "doc_id"))
+
+		db := setupTestDB(t)
+
+		// 插入随机数量的 video_segments 记录
+		for i := 0; i < segCount; i++ {
+			startTime := rapid.Float64Range(0, 3600).Draw(rt, fmt.Sprintf("start_%d", i))
+			duration := rapid.Float64Range(0.1, 60).Draw(rt, fmt.Sprintf("dur_%d", i))
+			segType := "transcript"
+			if i%2 == 0 {
+				segType = "keyframe"
+			}
+			chunkID := fmt.Sprintf("%s-%d", docID, i)
+			_, err := db.Exec(
+				`INSERT INTO video_segments (id, document_id, segment_type, start_time, end_time, content, chunk_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				fmt.Sprintf("seg-%s-%d", docID, i), docID, segType, startTime, startTime+duration, "content", chunkID,
+			)
+			if err != nil {
+				rt.Fatalf("insert video_segment: %v", err)
+			}
+		}
+
+		qe := NewQueryEngine(nil, nil, nil, db, defaultConfig())
+
+		// 构造与 video_segments 匹配的搜索结果
+		results := make([]vectorstore.SearchResult, segCount)
+		for i := 0; i < segCount; i++ {
+			results[i] = vectorstore.SearchResult{
+				DocumentID:   docID,
+				ChunkIndex:   i,
+				ChunkText:    "video chunk",
+				DocumentName: "test.mp4",
+				Score:        0.9,
+			}
+		}
+
+		enriched := qe.enrichVideoTimeInfo(results)
+
+		// 验证每个结果都有有效的时间信息
+		for i, r := range enriched {
+			if r.StartTime == 0 && r.EndTime == 0 {
+				rt.Errorf("result[%d]: expected non-zero time info for video chunk", i)
+			}
+			if r.EndTime < r.StartTime {
+				rt.Errorf("result[%d]: EndTime (%f) < StartTime (%f)", i, r.EndTime, r.StartTime)
+			}
+		}
+
+		// 验证非视频文档的结果不受影响
+		nonVideoResults := []vectorstore.SearchResult{
+			{DocumentID: "non-video-doc", ChunkIndex: 0, ChunkText: "text", Score: 0.9},
+		}
+		nonVideoEnriched := qe.enrichVideoTimeInfo(nonVideoResults)
+		if nonVideoEnriched[0].StartTime != 0 || nonVideoEnriched[0].EndTime != 0 {
+			rt.Errorf("non-video result should have zero time info, got start=%f end=%f",
+				nonVideoEnriched[0].StartTime, nonVideoEnriched[0].EndTime)
+		}
+	})
+}
