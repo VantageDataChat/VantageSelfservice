@@ -577,6 +577,7 @@
                             content: data.product_intro,
                             sources: [],
                             isPending: false,
+                            isWelcome: true,
                             timestamp: Date.now()
                         });
                     }
@@ -738,7 +739,7 @@
 
         var html = '';
         for (var i = 0; i < chatMessages.length; i++) {
-            html += renderSingleMessage(chatMessages[i], i === chatMessages.length - 1);
+            html += renderSingleMessage(chatMessages[i], i === chatMessages.length - 1, i);
         }
         if (chatLoading) {
             html += renderLoadingIndicator();
@@ -747,7 +748,7 @@
         scrollChatToBottom();
     }
 
-    function renderSingleMessage(msg, isLast) {
+    function renderSingleMessage(msg, isLast, i) {
         var timeStr = formatTime(msg.timestamp);
 
         if (msg.role === 'user') {
@@ -856,9 +857,9 @@
 
         html += '<span class="chat-msg-time">' + timeStr + '</span>';
 
-        // Add "Not Satisfied" button for non-pending system answers
-        if (!msg.isPending && msg.content) {
-            html += '<button class="chat-not-satisfied-btn" onclick="window.handleNotSatisfied(this, ' + i + ')">' + i18n.t('chat_not_satisfied') + '</button>';
+        // Add "Not Satisfied" button for non-pending, non-welcome system answers
+        if (!msg.isPending && !msg.isWelcome && msg.content) {
+            html += '<button class="chat-not-satisfied-btn" onclick="window.handleNotSatisfied(this, ' + i + ')">👎 ' + i18n.t('chat_not_satisfied') + '</button>';
         }
 
         html += '</div>';
