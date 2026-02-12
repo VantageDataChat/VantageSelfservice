@@ -3,7 +3,6 @@
 package video
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
