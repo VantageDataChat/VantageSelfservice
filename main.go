@@ -69,16 +69,16 @@ func main() {
 	dm.SetVideoConfig(cfg.Video)
 
 	// 视频依赖检测
-	if cfg.Video.FFmpegPath != "" || cfg.Video.WhisperPath != "" {
+	if cfg.Video.FFmpegPath != "" || cfg.Video.SenseVoicePath != "" {
 		vp := video.NewParser(cfg.Video)
-		ffmpegOK, whisperOK := vp.CheckDependencies()
+		ffmpegOK, senseVoiceOK := vp.CheckDependencies()
 		statusStr := func(ok bool) string {
 			if ok {
 				return "可用"
 			}
 			return "不可用"
 		}
-		log.Printf("视频检索: ffmpeg=%s, whisper=%s", statusStr(ffmpegOK), statusStr(whisperOK))
+		log.Printf("视频检索: ffmpeg=%s, sensevoice=%s", statusStr(ffmpegOK), statusStr(senseVoiceOK))
 	}
 
 	ps := product.NewProductService(database)
@@ -1297,12 +1297,12 @@ func handleVideoCheckDeps(app *App) http.HandlerFunc {
 		}
 		cfg := app.configManager.Get()
 		if cfg == nil {
-			writeJSON(w, http.StatusOK, map[string]bool{"ffmpeg_ok": false, "whisper_ok": false})
+			writeJSON(w, http.StatusOK, map[string]bool{"ffmpeg_ok": false, "sensevoice_ok": false})
 			return
 		}
 		vp := video.NewParser(cfg.Video)
-		ffmpegOK, whisperOK := vp.CheckDependencies()
-		writeJSON(w, http.StatusOK, map[string]bool{"ffmpeg_ok": ffmpegOK, "whisper_ok": whisperOK})
+		ffmpegOK, senseVoiceOK := vp.CheckDependencies()
+		writeJSON(w, http.StatusOK, map[string]bool{"ffmpeg_ok": ffmpegOK, "sensevoice_ok": senseVoiceOK})
 	}
 }
 

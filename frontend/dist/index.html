@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>软件自助服务平台</title>
-    <link rel="stylesheet" href="/styles.css?v=20260212-2">
-    <script src="/i18n.js?v=20260212-2"></script>
+    <link rel="stylesheet" href="/styles.css?v=20260212-3">
+    <script src="/i18n.js?v=20260212-3"></script>
 </head>
 <body>
     <div id="app">
@@ -684,9 +684,9 @@
                                             <span class="admin-dep-label" id="dep-ffmpeg-label" data-i18n="admin_multimodal_checking">检测中...</span>
                                         </div>
                                         <div class="admin-dep-item">
-                                            <span class="admin-dep-icon" id="dep-whisper-icon">⏳</span>
-                                            <span>Whisper</span>
-                                            <span class="admin-dep-label" id="dep-whisper-label" data-i18n="admin_multimodal_checking">检测中...</span>
+                                            <span class="admin-dep-icon" id="dep-sensevoice-icon">⏳</span>
+                                            <span>SenseVoice</span>
+                                            <span class="admin-dep-label" id="dep-sensevoice-label" data-i18n="admin_multimodal_checking">检测中...</span>
                                         </div>
                                     </div>
                                     <div class="admin-form-row" style="margin-top:0.5rem;">
@@ -735,50 +735,42 @@
                                 </fieldset>
 
                                 <fieldset class="admin-fieldset">
-                                    <legend data-i18n="admin_multimodal_whisper">Whisper 配置</legend>
+                                    <legend data-i18n="admin_multimodal_sensevoice">SenseVoice 配置</legend>
                                     <div class="admin-form-row">
-                                        <label data-i18n="admin_multimodal_whisper_path">Whisper 路径</label>
-                                        <input type="text" id="cfg-video-whisper-path" placeholder="whisper">
-                                        <span class="admin-form-hint" data-i18n="admin_multimodal_whisper_path_hint">留空则使用系统 PATH 中的 whisper，也可填写完整路径</span>
+                                        <label data-i18n="admin_multimodal_sensevoice_path">SenseVoice 可执行文件路径</label>
+                                        <input type="text" id="cfg-video-sensevoice-path" placeholder="/usr/local/bin/sense-voice-cpp">
+                                        <span class="admin-form-hint" data-i18n="admin_multimodal_sensevoice_path_hint">填写 sense-voice-cpp 的完整路径</span>
                                     </div>
                                     <div class="admin-form-row">
-                                        <label data-i18n="admin_multimodal_whisper_model">Whisper 模型</label>
-                                        <select id="cfg-video-whisper-model">
-                                            <option value="tiny">tiny（最快，精度较低，~1GB 显存）</option>
-                                            <option value="base" selected>base（推荐，速度与精度平衡，~1GB 显存）</option>
-                                            <option value="small">small（较好精度，~2GB 显存）</option>
-                                            <option value="medium">medium（高精度，~5GB 显存）</option>
-                                            <option value="large">large（最高精度，~10GB 显存）</option>
-                                        </select>
-                                        <span class="admin-form-hint" data-i18n="admin_multimodal_whisper_model_hint">模型越大精度越高但速度越慢，首次使用会自动下载模型文件</span>
+                                        <label data-i18n="admin_multimodal_sensevoice_model">SenseVoice 模型文件路径</label>
+                                        <input type="text" id="cfg-video-sensevoice-model" placeholder="/path/to/model.bin">
+                                        <span class="admin-form-hint" data-i18n="admin_multimodal_sensevoice_model_hint">填写模型文件（model.bin）的完整路径</span>
                                     </div>
                                     <div class="admin-install-guide">
                                         <details>
-                                            <summary data-i18n="admin_multimodal_whisper_install">📦 Whisper 安装指南</summary>
+                                            <summary data-i18n="admin_multimodal_sensevoice_install">📦 SenseVoice.cpp 安装指南</summary>
                                             <div class="admin-install-content">
-                                                <p data-i18n="admin_multimodal_whisper_desc">OpenAI Whisper 用于将视频中的语音转录为文字，需要 Python 3.8+ 环境。</p>
+                                                <p data-i18n="admin_multimodal_sensevoice_desc">SenseVoice.cpp 是轻量级的 C++ 语音识别工具，无需 Python 环境，易于部署。</p>
                                                 <div class="admin-install-os">
-                                                    <h4 data-i18n="admin_multimodal_whisper_step1_title">步骤 1：安装 Python</h4>
-                                                    <p data-i18n="admin_multimodal_whisper_step1_desc">确保系统已安装 Python 3.8 或更高版本。可运行 <code>python --version</code> 检查。</p>
-                                                    <p data-i18n="admin_multimodal_whisper_step1_download">如未安装，请从 <a href="https://www.python.org/downloads/" target="_blank" rel="noopener">python.org</a> 下载安装。</p>
+                                                    <h4 data-i18n="admin_multimodal_sensevoice_step1_title">步骤 1：下载预编译程序</h4>
+                                                    <p data-i18n="admin_multimodal_sensevoice_step1_desc">从 GitHub Releases 下载适合您系统的预编译版本</p>
+                                                    <p data-i18n="admin_multimodal_sensevoice_step1_alt">或使用源码编译</p>
                                                 </div>
                                                 <div class="admin-install-os">
-                                                    <h4 data-i18n="admin_multimodal_whisper_step2_title">步骤 2：安装 Whisper</h4>
-                                                    <code class="admin-install-cmd">pip install openai-whisper</code>
-                                                    <p data-i18n="admin_multimodal_whisper_step2_gpu">如有 NVIDIA GPU，建议先安装 CUDA 版 PyTorch 以获得 GPU 加速：</p>
-                                                    <code class="admin-install-cmd">pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121</code>
+                                                    <h4 data-i18n="admin_multimodal_sensevoice_step2_title">步骤 2：下载模型文件</h4>
+                                                    <p data-i18n="admin_multimodal_sensevoice_step2_desc">从项目的模型下载页面获取 model.bin 文件</p>
+                                                    <p data-i18n="admin_multimodal_sensevoice_step2_note">推荐使用 small 模型</p>
                                                 </div>
                                                 <div class="admin-install-os">
-                                                    <h4 data-i18n="admin_multimodal_whisper_step3_title">步骤 3：验证安装</h4>
-                                                    <code class="admin-install-cmd">whisper --help</code>
-                                                    <p data-i18n="admin_multimodal_whisper_step3_desc">如果显示帮助信息则安装成功。首次转录时会自动下载所选模型。</p>
+                                                    <h4 data-i18n="admin_multimodal_sensevoice_step3_title">步骤 3：配置路径</h4>
+                                                    <p data-i18n="admin_multimodal_sensevoice_step3_desc">在上方填写可执行文件和模型文件的完整路径即可</p>
                                                 </div>
                                                 <div class="admin-install-os">
-                                                    <h4 data-i18n="admin_multimodal_whisper_note_title">⚠️ 注意事项</h4>
+                                                    <h4 data-i18n="admin_multimodal_sensevoice_note_title">⚠️ 注意事项</h4>
                                                     <ul>
-                                                        <li data-i18n="admin_multimodal_whisper_note1">Whisper 依赖 FFmpeg，请确保 FFmpeg 已安装</li>
-                                                        <li data-i18n="admin_multimodal_whisper_note2">无 GPU 时也可运行，但转录速度会较慢</li>
-                                                        <li data-i18n="admin_multimodal_whisper_note3">模型文件会缓存在 <code>~/.cache/whisper/</code> 目录</li>
+                                                        <li data-i18n="admin_multimodal_sensevoice_note1">SenseVoice 依赖 FFmpeg 提取音频</li>
+                                                        <li data-i18n="admin_multimodal_sensevoice_note2">C++ 实现，无需 GPU 也能快速运行</li>
+                                                        <li data-i18n="admin_multimodal_sensevoice_note3">命令行驱动，部署简单</li>
                                                     </ul>
                                                 </div>
                                             </div>
@@ -913,7 +905,7 @@
         </div>
     </div>
 
-    <script src="/app.js?v=20260212-2"></script>
+    <script src="/app.js?v=20260212-3"></script>
     <script>
         // Apply i18n translations on page load
         if (window.i18n) {

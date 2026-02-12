@@ -2473,10 +2473,9 @@
             .then(function (cfg) {
                 var video = cfg.video || {};
                 setVal('cfg-video-ffmpeg-path', video.ffmpeg_path || '');
-                setVal('cfg-video-whisper-path', video.whisper_path || '');
+                setVal('cfg-video-sensevoice-path', video.sensevoice_path || '');
                 setVal('cfg-video-keyframe-interval', video.keyframe_interval || 10);
-                var modelSelect = document.getElementById('cfg-video-whisper-model');
-                if (modelSelect) modelSelect.value = video.whisper_model || 'base';
+                setVal('cfg-video-sensevoice-model', video.sensevoice_model || '');
                 checkMultimodalDeps();
             })
             .catch(function () {
@@ -2487,12 +2486,12 @@
     window.checkMultimodalDeps = function () {
         var ffmpegIcon = document.getElementById('dep-ffmpeg-icon');
         var ffmpegLabel = document.getElementById('dep-ffmpeg-label');
-        var whisperIcon = document.getElementById('dep-whisper-icon');
-        var whisperLabel = document.getElementById('dep-whisper-label');
+        var sensevoiceIcon = document.getElementById('dep-sensevoice-icon');
+        var sensevoiceLabel = document.getElementById('dep-sensevoice-label');
         if (ffmpegIcon) ffmpegIcon.textContent = '⏳';
         if (ffmpegLabel) ffmpegLabel.textContent = i18n.t('admin_multimodal_checking');
-        if (whisperIcon) whisperIcon.textContent = '⏳';
-        if (whisperLabel) whisperLabel.textContent = i18n.t('admin_multimodal_checking');
+        if (sensevoiceIcon) sensevoiceIcon.textContent = '⏳';
+        if (sensevoiceLabel) sensevoiceLabel.textContent = i18n.t('admin_multimodal_checking');
 
         adminFetch('/api/video/check-deps')
             .then(function (res) { return res.json(); })
@@ -2500,29 +2499,29 @@
                 if (ffmpegIcon) ffmpegIcon.textContent = data.ffmpeg_ok ? '✅' : '❌';
                 if (ffmpegLabel) ffmpegLabel.textContent = data.ffmpeg_ok ? i18n.t('admin_multimodal_available') : i18n.t('admin_multimodal_not_found');
                 if (ffmpegLabel) ffmpegLabel.style.color = data.ffmpeg_ok ? '#38a169' : '#e53e3e';
-                if (whisperIcon) whisperIcon.textContent = data.whisper_ok ? '✅' : '❌';
-                if (whisperLabel) whisperLabel.textContent = data.whisper_ok ? i18n.t('admin_multimodal_available') : i18n.t('admin_multimodal_not_found');
-                if (whisperLabel) whisperLabel.style.color = data.whisper_ok ? '#38a169' : '#e53e3e';
+                if (sensevoiceIcon) sensevoiceIcon.textContent = data.sensevoice_ok ? '✅' : '❌';
+                if (sensevoiceLabel) sensevoiceLabel.textContent = data.sensevoice_ok ? i18n.t('admin_multimodal_available') : i18n.t('admin_multimodal_not_found');
+                if (sensevoiceLabel) sensevoiceLabel.style.color = data.sensevoice_ok ? '#38a169' : '#e53e3e';
             })
             .catch(function () {
                 if (ffmpegIcon) ffmpegIcon.textContent = '❓';
                 if (ffmpegLabel) ffmpegLabel.textContent = i18n.t('admin_multimodal_check_failed');
-                if (whisperIcon) whisperIcon.textContent = '❓';
-                if (whisperLabel) whisperLabel.textContent = i18n.t('admin_multimodal_check_failed');
+                if (sensevoiceIcon) sensevoiceIcon.textContent = '❓';
+                if (sensevoiceLabel) sensevoiceLabel.textContent = i18n.t('admin_multimodal_check_failed');
             });
     };
 
     window.saveMultimodalSettings = function () {
         var updates = {};
         var ffmpegPath = getVal('cfg-video-ffmpeg-path');
-        var whisperPath = getVal('cfg-video-whisper-path');
+        var sensevoicePath = getVal('cfg-video-sensevoice-path');
         var keyframeInterval = getVal('cfg-video-keyframe-interval');
-        var whisperModel = getVal('cfg-video-whisper-model');
+        var sensevoiceModel = getVal('cfg-video-sensevoice-model');
 
         updates['video.ffmpeg_path'] = ffmpegPath;
-        updates['video.whisper_path'] = whisperPath;
+        updates['video.sensevoice_path'] = sensevoicePath;
         if (keyframeInterval !== '') updates['video.keyframe_interval'] = parseInt(keyframeInterval, 10);
-        if (whisperModel) updates['video.whisper_model'] = whisperModel;
+        if (sensevoiceModel) updates['video.sensevoice_model'] = sensevoiceModel;
 
         adminFetch('/api/config', {
             method: 'PUT',

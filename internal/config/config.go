@@ -105,9 +105,9 @@ type OAuthConfig struct {
 // VideoConfig holds video processing configuration.
 type VideoConfig struct {
 	FFmpegPath       string `json:"ffmpeg_path"`       // ffmpeg executable path, empty means video not supported
-	WhisperPath      string `json:"whisper_path"`      // whisper CLI executable path, empty means skip transcription
+	SenseVoicePath   string `json:"sensevoice_path"`   // sense-voice-cpp executable path, empty means skip transcription
 	KeyframeInterval int    `json:"keyframe_interval"` // keyframe sampling interval in seconds, default 10
-	WhisperModel     string `json:"whisper_model"`     // whisper model name, default "base"
+	SenseVoiceModel  string `json:"sensevoice_model"`  // sense-voice model path (model.bin file)
 }
 
 // AdminConfig holds admin authentication configuration.

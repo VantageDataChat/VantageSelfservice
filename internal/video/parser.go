@@ -1,8 +1,9 @@
-// Package video provides video parsing functionality including whisper transcript
+// Package video provides video parsing functionality including SenseVoice transcript
 // parsing, keyframe management, and serialization utilities.
 package video
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,7 +15,7 @@ import (
 	"helpdesk/internal/config"
 )
 
-// TranscriptSegment 表示 whisper 输出的一个转录片段
+// TranscriptSegment 表示语音识别输出的一个转录片段
 type TranscriptSegment struct {
 	Start float64 `json:"start"` // 起始时间（秒）
 	End   float64 `json:"end"`   // 结束时间（秒）
@@ -34,21 +35,21 @@ type ParseResult struct {
 	Duration   float64             // 视频总时长（秒）
 }
 
-// whisperOutput represents the JSON structure output by whisper CLI.
-type whisperOutput struct {
-	Segments []TranscriptSegment `json:"segments"`
-}
-
-// ParseWhisperOutput 解析 whisper JSON 输出为 TranscriptSegment 列表
-func ParseWhisperOutput(jsonData []byte) ([]TranscriptSegment, error) {
-	var output whisperOutput
-	if err := json.Unmarshal(jsonData, &output); err != nil {
-		return nil, fmt.Errorf("whisper JSON 解析失败: %w", err)
+// ParseSenseVoiceOutput 解析 SenseVoice 文本输出为 TranscriptSegment 列表
+// SenseVoice输出格式为纯文本，我们将整段文本作为一个segment
+func ParseSenseVoiceOutput(textData string) []TranscriptSegment {
+	text := strings.TrimSpace(textData)
+	if text == "" {
+		return []TranscriptSegment{}
 	}
-	if output.Segments == nil {
-		return []TranscriptSegment{}, nil
+	// 将整个转录文本作为一个segment，时间范围为0到end
+	return []TranscriptSegment{
+		{
+			Start: 0,
+			End:   0, // 实际的end时间会在后续填充
+			Text:  text,
+		},
 	}
-	return output.Segments, nil
 }
 
 // SerializeTranscript 将 TranscriptSegment 列表序列化为 JSON
@@ -56,12 +57,12 @@ func SerializeTranscript(segments []TranscriptSegment) ([]byte, error) {
 	return json.Marshal(segments)
 }
 
-// Parser 视频解析器，封装 ffmpeg 和 whisper 的调用逻辑
+// Parser 视频解析器，封装 ffmpeg 和 SenseVoice 的调用逻辑
 type Parser struct {
 	FFmpegPath       string
-	WhisperPath      string
+	SenseVoicePath   string
 	KeyframeInterval int
-	WhisperModel     string
+	SenseVoiceModel  string
 }
 
 // NewParser 根据 VideoConfig 创建 Parser 实例
@@ -70,31 +71,29 @@ func NewParser(cfg config.VideoConfig) *Parser {
 	if interval <= 0 {
 		interval = 10
 	}
-	model := cfg.WhisperModel
-	if model == "" {
-		model = "base"
-	}
 	return &Parser{
 		FFmpegPath:       cfg.FFmpegPath,
-		WhisperPath:      cfg.WhisperPath,
+		SenseVoicePath:   cfg.SenseVoicePath,
 		KeyframeInterval: interval,
-		WhisperModel:     model,
+		SenseVoiceModel:  cfg.SenseVoiceModel,
 	}
 }
 
-// CheckDependencies 检测 ffmpeg 和 whisper 是否可用
-func (p *Parser) CheckDependencies() (ffmpegOK bool, whisperOK bool) {
+// CheckDependencies 检测 ffmpeg 和 SenseVoice 是否可用
+func (p *Parser) CheckDependencies() (ffmpegOK bool, senseVoiceOK bool) {
 	if p.FFmpegPath != "" {
 		cmd := exec.Command(p.FFmpegPath, "-version")
 		if err := cmd.Run(); err == nil {
 			ffmpegOK = true
 		}
 	}
-	if p.WhisperPath != "" {
-		// whisper --help is a safe way to check availability
-		cmd := exec.Command(p.WhisperPath, "--help")
-		if err := cmd.Run(); err == nil {
-			whisperOK = true
+	if p.SenseVoicePath != "" && p.SenseVoiceModel != "" {
+		// 检查 sense-voice 可执行文件是否存在
+		if _, err := os.Stat(p.SenseVoicePath); err == nil {
+			// 检查模型文件是否存在
+			if _, err := os.Stat(p.SenseVoiceModel); err == nil {
+				senseVoiceOK = true
+			}
 		}
 	}
 	return
@@ -120,39 +119,46 @@ func (p *Parser) ExtractAudio(videoPath, outputPath string) error {
 	return nil
 }
 
-// Transcribe 调用 whisper CLI 对音频进行语音转录
+// Transcribe 调用 SenseVoice CLI 对音频进行语音转录
 func (p *Parser) Transcribe(audioPath string) ([]TranscriptSegment, error) {
-	if p.WhisperPath == "" {
-		return nil, fmt.Errorf("whisper 路径未配置")
+	if p.SenseVoicePath == "" {
+		return nil, fmt.Errorf("SenseVoice 路径未配置")
+	}
+	if p.SenseVoiceModel == "" {
+		return nil, fmt.Errorf("SenseVoice 模型路径未配置")
 	}
 
-	tempDir, err := os.MkdirTemp("", "whisper-output-*")
-	if err != nil {
-		return nil, fmt.Errorf("创建临时目录失败: %w", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	cmd := exec.Command(p.WhisperPath,
-		audioPath,
-		"--model", p.WhisperModel,
-		"--output_format", "json",
-		"--output_dir", tempDir,
+	// SenseVoice.cpp 命令行格式：
+	// sense-voice-cpp -m model.bin -f audio.wav
+	cmd := exec.Command(p.SenseVoicePath,
+		"-m", p.SenseVoiceModel,
+		"-f", audioPath,
 	)
-	output, err := cmd.CombinedOutput()
+
+	// 捕获标准输出
+	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("whisper 转录失败: %s: %w", strings.TrimSpace(string(output)), err)
+		stderr := ""
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			stderr = string(exitErr.Stderr)
+		}
+		return nil, fmt.Errorf("SenseVoice 转录失败: %s: %w", strings.TrimSpace(stderr), err)
 	}
 
-	// whisper outputs a JSON file named after the input audio file
-	baseName := strings.TrimSuffix(filepath.Base(audioPath), filepath.Ext(audioPath))
-	jsonPath := filepath.Join(tempDir, baseName+".json")
-
-	jsonData, err := os.ReadFile(jsonPath)
-	if err != nil {
-		return nil, fmt.Errorf("读取 whisper 输出文件失败: %w", err)
+	// 解析输出文本
+	text := strings.TrimSpace(string(output))
+	if text == "" {
+		return []TranscriptSegment{}, nil
 	}
 
-	return ParseWhisperOutput(jsonData)
+	// 返回单个segment，包含整个转录文本
+	return []TranscriptSegment{
+		{
+			Start: 0,
+			End:   0, // 可以从视频时长推算
+			Text:  text,
+		},
+	}, nil
 }
 
 // ExtractKeyframes 调用 ffmpeg 按 KeyframeInterval 间隔从视频中提取关键帧图像
@@ -208,8 +214,8 @@ func (p *Parser) Parse(videoPath string) (*ParseResult, error) {
 
 	result := &ParseResult{}
 
-	// 音频转录（仅当 whisper 已配置时执行）
-	if p.WhisperPath != "" {
+	// 音频转录（仅当 SenseVoice 已配置时执行）
+	if p.SenseVoicePath != "" && p.SenseVoiceModel != "" {
 		audioPath := filepath.Join(tempDir, "audio.wav")
 		audioErr := p.ExtractAudio(videoPath, audioPath)
 		if audioErr != nil {
