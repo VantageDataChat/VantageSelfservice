@@ -22,8 +22,10 @@ func InitDB(dbPath string) (*sql.DB, error) {
 	}
 
 	// Configure connection pool for SQLite
-	db.SetMaxOpenConns(1) // SQLite only supports one writer at a time
-	db.SetMaxIdleConns(1)
+	// WAL mode allows concurrent readers with one writer.
+	// Use multiple connections so reads don't block behind writes.
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(4)
 	db.SetConnMaxLifetime(0) // connections don't expire
 
 	if err := configurePragmas(db); err != nil {
@@ -73,8 +75,9 @@ func configurePragmas(db *sql.DB) error {
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA foreign_keys=ON",
-		"PRAGMA busy_timeout=5000",
+		"PRAGMA busy_timeout=30000",
 		"PRAGMA secure_delete=ON",
+		"PRAGMA wal_autocheckpoint=1000",
 	}
 	for _, p := range pragmas {
 		if _, err := db.Exec(p); err != nil {
@@ -124,7 +127,8 @@ func createTables(db *sql.DB) error {
 			password_hash  TEXT,
 			email_verified INTEGER DEFAULT 0,
 			created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
-			last_login     DATETIME
+			last_login     DATETIME,
+			default_product_id TEXT DEFAULT ''
 		)`,
 		`CREATE TABLE IF NOT EXISTS email_tokens (
 			id         TEXT PRIMARY KEY,
@@ -290,6 +294,9 @@ func migrateTables(db *sql.DB) error {
 	}{
 		{"users", "password_hash", "ALTER TABLE users ADD COLUMN password_hash TEXT"},
 		{"users", "email_verified", "ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0"},
+		{"users", "last_login", "ALTER TABLE users ADD COLUMN last_login DATETIME"},
+		{"users", "created_at", "ALTER TABLE users ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP"},
+		{"users", "default_product_id", "ALTER TABLE users ADD COLUMN default_product_id TEXT DEFAULT ''"},
 		{"chunks", "image_url", "ALTER TABLE chunks ADD COLUMN image_url TEXT DEFAULT ''"},
 		{"documents", "content_hash", "ALTER TABLE documents ADD COLUMN content_hash TEXT DEFAULT ''"},
 		{"pending_questions", "image_data", "ALTER TABLE pending_questions ADD COLUMN image_data TEXT DEFAULT ''"},

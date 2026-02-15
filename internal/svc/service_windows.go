@@ -52,8 +52,9 @@ func (hs *HelpdeskService) Execute(args []string, r <-chan svc.ChangeRequest, s 
 			case svc.Stop, svc.Shutdown:
 				hs.logger.Info("Received stop/shutdown command")
 				s <- svc.Status{State: svc.StopPending}
-				cancel() // Cancel context to trigger graceful shutdown
-				hs.appService.Shutdown(30 * time.Second)
+				cancel() // Cancel context — Run() will call Shutdown internally
+				// Wait for Run() to finish instead of calling Shutdown again
+				<-errCh
 				s <- svc.Status{State: svc.Stopped}
 				hs.logger.Info("Helpdesk service stopped")
 				return false, 0

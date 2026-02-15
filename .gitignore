@@ -4,6 +4,8 @@ deploy.tar.gz
 helpdesk
 build/dist/
 build/installer/helpdesk-installer.exe
+frontend.zip
+helpdesk_release_linux.tar.gz
 
 # Upload data (test/runtime files)
 data/uploads/

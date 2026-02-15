@@ -3,8 +3,10 @@ package email
 
 import (
 	"fmt"
+	"net"
 	"net/smtp"
 	"strings"
+	"time"
 
 	"helpdesk/internal/config"
 )
@@ -97,9 +99,40 @@ func buildMessage(fromName, fromAddr, to, subject, body string) []byte {
 
 func (s *Service) send(cfg config.SMTPConfig, from, to string, msg []byte) error {
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
+	// Set a 15-second timeout for SMTP connection to prevent blocking
+	conn, err := net.DialTimeout("tcp", addr, 15*time.Second)
+	if err != nil {
+		return fmt.Errorf("连接邮件服务器失败: %w", err)
+	}
+	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	defer conn.Close()
+
+	client, err := smtp.NewClient(conn, cfg.Host)
+	if err != nil {
+		return fmt.Errorf("创建SMTP客户端失败: %w", err)
+	}
+	defer client.Close()
+
+	// Auth
 	auth := smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)
-	if err := smtp.SendMail(addr, auth, from, []string{to}, msg); err != nil {
+	if err := client.Auth(auth); err != nil {
+		return fmt.Errorf("邮件认证失败: %w", err)
+	}
+	if err := client.Mail(from); err != nil {
 		return fmt.Errorf("发送邮件失败: %w", err)
 	}
-	return nil
+	if err := client.Rcpt(to); err != nil {
+		return fmt.Errorf("发送邮件失败: %w", err)
+	}
+	w, err := client.Data()
+	if err != nil {
+		return fmt.Errorf("发送邮件失败: %w", err)
+	}
+	if _, err := w.Write(msg); err != nil {
+		return fmt.Errorf("发送邮件失败: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("发送邮件失败: %w", err)
+	}
+	return client.Quit()
 }

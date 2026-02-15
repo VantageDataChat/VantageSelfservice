@@ -498,9 +498,7 @@ func toFloat32(v []float64) []float32 {
 
 // Store inserts a batch of VectorChunks into the chunks table and updates the cache.
 func (s *SQLiteVectorStore) Store(docID string, chunks []VectorChunk) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	// Prepare new entries and do DB write OUTSIDE the lock so reads aren't blocked.
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -560,6 +558,8 @@ func (s *SQLiteVectorStore) Store(docID string, chunks []VectorChunk) error {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
+	// Only hold the lock for the fast in-memory cache update
+	s.mu.Lock()
 	if s.loaded {
 		// Clear merged partition caches since indices are changing.
 		s.clearMergedPartitionCache()
@@ -576,11 +576,13 @@ func (s *SQLiteVectorStore) Store(docID string, chunks []VectorChunk) error {
 		}
 	} else {
 		if err := s.loadCache(); err != nil {
+			s.mu.Unlock()
 			return err
 		}
 	}
-
 	s.searchCache.invalidate()
+	s.mu.Unlock()
+
 	return nil
 }
 
@@ -1006,14 +1008,14 @@ func keywordOverlap(queryKeywords []string, chunkLower string) float64 {
 
 // DeleteByDocID removes all chunks for the given document from DB and cache.
 func (s *SQLiteVectorStore) DeleteByDocID(docID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	// Do DB delete OUTSIDE the lock so reads aren't blocked.
 	_, err := s.db.Exec(`DELETE FROM chunks WHERE document_id = ?`, docID)
 	if err != nil {
 		return fmt.Errorf("failed to delete chunks for document %s: %w", docID, err)
 	}
 
+	// Only hold the lock for the fast in-memory cache rebuild
+	s.mu.Lock()
 	if s.loaded {
 		dim := s.arena.dim
 		newMeta := make([]chunkMeta, 0, len(s.meta))
@@ -1047,8 +1049,9 @@ func (s *SQLiteVectorStore) DeleteByDocID(docID string) error {
 		s.partitionIndex = newPartitionIndex
 		s.rebuildGlobalIndex()
 	}
-
 	s.searchCache.invalidate()
+	s.mu.Unlock()
+
 	return nil
 }
 

@@ -498,11 +498,13 @@ func (a *App) Register(req RegisterRequest, baseURL string) error {
 		return fmt.Errorf("创建验证令牌失败: %w", err)
 	}
 
-	// Send verification email
+	// Send verification email asynchronously so registration returns immediately
 	verifyURL := strings.TrimRight(baseURL, "/") + "/verify?token=" + token
-	if err := a.emailService.SendVerification(email, name, verifyURL); err != nil {
-		return fmt.Errorf("发送验证邮件失败: %w", err)
-	}
+	go func() {
+		if err := a.emailService.SendVerification(email, name, verifyURL); err != nil {
+			log.Printf("[Register] failed to send verification email to %s: %v", email, err)
+		}
+	}()
 
 	return nil
 }
@@ -553,10 +555,11 @@ type UserLoginResponse struct {
 
 // UserInfo holds basic user info for the frontend.
 type UserInfo struct {
-	ID       string `json:"id"`
-	Email    string `json:"email"`
-	Name     string `json:"name"`
-	Provider string `json:"provider"`
+	ID               string `json:"id"`
+	Email            string `json:"email"`
+	Name             string `json:"name"`
+	Provider         string `json:"provider"`
+	DefaultProductID string `json:"default_product_id,omitempty"`
 }
 
 // UserLogin authenticates a user with email and password.
@@ -566,6 +569,12 @@ func (a *App) UserLogin(email, password string) (*UserLoginResponse, error) {
 		return nil, fmt.Errorf("邮箱和密码不能为空")
 	}
 
+	// Check login rate limits and manual bans (using empty IP for now, or we can pass it if we update the signature)
+	// For simplicity in this step, we just check by email as 'username'
+	if err := a.loginLimiter.CheckAllowed(email, ""); err != nil {
+		return nil, err
+	}
+
 	var userID, name, passwordHash string
 	var emailVerified int
 	err := a.db.QueryRow(
@@ -573,6 +582,7 @@ func (a *App) UserLogin(email, password string) (*UserLoginResponse, error) {
 		email,
 	).Scan(&userID, &name, &passwordHash, &emailVerified)
 	if err == sql.ErrNoRows {
+		a.loginLimiter.RecordAttempt(email, "", false)
 		return nil, fmt.Errorf("邮箱或密码错误")
 	}
 	if err != nil {
@@ -584,8 +594,11 @@ func (a *App) UserLogin(email, password string) (*UserLoginResponse, error) {
 	}
 
 	if err := auth.VerifyAdminPassword(password, passwordHash); err != nil {
+		a.loginLimiter.RecordAttempt(email, "", false)
 		return nil, fmt.Errorf("邮箱或密码错误")
 	}
+
+	a.loginLimiter.RecordAttempt(email, "", true)
 
 	// Update last login
 	a.db.Exec(`UPDATE users SET last_login = ? WHERE id = ?`, time.Now().UTC().Format(time.RFC3339), userID)
@@ -597,13 +610,18 @@ func (a *App) UserLogin(email, password string) (*UserLoginResponse, error) {
 		return nil, err
 	}
 
+	// Fetch default product (best-effort, column may not exist yet)
+	var defaultProductID string
+	_ = a.db.QueryRow(`SELECT COALESCE(default_product_id, '') FROM users WHERE id = ?`, userID).Scan(&defaultProductID)
+
 	return &UserLoginResponse{
 		Session: session,
 		User: &UserInfo{
-			ID:       userID,
-			Email:    email,
-			Name:     name,
-			Provider: "local",
+			ID:               userID,
+			Email:            email,
+			Name:             name,
+			Provider:         "local",
+			DefaultProductID: defaultProductID,
 		},
 	}, nil
 }
@@ -1172,4 +1190,196 @@ func (a *App) GetProductsByAdminUserID(adminUserID string) ([]product.Product, e
 // replacing any previous assignments.
 func (a *App) AssignProductsToAdminUser(adminUserID string, productIDs []string) error {
 	return a.productService.AssignAdminUser(adminUserID, productIDs)
+}
+
+// --- User Preferences ---
+
+// GetUserDefaultProduct returns the default product ID for a user.
+func (a *App) GetUserDefaultProduct(userID string) (string, error) {
+	var defaultProductID string
+	err := a.db.QueryRow(`SELECT COALESCE(default_product_id, '') FROM users WHERE id = ?`, userID).Scan(&defaultProductID)
+	if err != nil {
+		// Column may not exist yet; return empty gracefully
+		return "", nil
+	}
+	return defaultProductID, nil
+}
+
+// SetUserDefaultProduct sets the default product ID for a user.
+func (a *App) SetUserDefaultProduct(userID, productID string) error {
+	_, err := a.db.Exec(`UPDATE users SET default_product_id = ? WHERE id = ?`, productID, userID)
+	return err
+}
+
+// --- Customer Management ---
+
+// CustomerUserInfo holds detailed info about a regular user for admin management.
+type CustomerUserInfo struct {
+	ID            string `json:"id"`
+	Email         string `json:"email"`
+	Name          string `json:"name"`
+	Provider      string `json:"provider"`
+	EmailVerified bool   `json:"email_verified"`
+	CreatedAt     string `json:"created_at"`
+	LastLogin     string `json:"last_login,omitempty"`
+	IsBanned      bool   `json:"is_banned"`
+	BanReason     string `json:"ban_reason,omitempty"`
+	BanUnlocksAt  string `json:"ban_unlocks_at,omitempty"`
+}
+
+// CustomerListResult holds paginated customer list with stats.
+type CustomerListResult struct {
+	Customers   []CustomerUserInfo `json:"customers"`
+	Total       int                `json:"total"`
+	BannedCount int                `json:"banned_count"`
+	Page        int                `json:"page"`
+	PageSize    int                `json:"page_size"`
+}
+
+// ListCustomers returns all regular users with their status.
+func (a *App) ListCustomers() ([]CustomerUserInfo, error) {
+	result, err := a.ListCustomersPaged(1, 999999, "")
+	if err != nil {
+		return nil, err
+	}
+	return result.Customers, nil
+}
+
+// ListCustomersPaged returns paginated customers with stats and optional email search.
+func (a *App) ListCustomersPaged(page, pageSize int, search string) (*CustomerListResult, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 200 {
+		pageSize = 20
+	}
+
+	// Build WHERE clause
+	baseWhere := `provider != 'admin_sub' AND id != 'admin'`
+	var args []interface{}
+	if search != "" {
+		baseWhere += ` AND COALESCE(email, '') LIKE ?`
+		args = append(args, "%"+search+"%")
+	}
+
+	// Get total count
+	var total int
+	err := a.db.QueryRow(`SELECT COUNT(*) FROM users WHERE `+baseWhere, args...).Scan(&total)
+	if err != nil {
+		return nil, fmt.Errorf("count customers: %w", err)
+	}
+
+	// Get paginated rows
+	offset := (page - 1) * pageSize
+	queryArgs := append(args, pageSize, offset)
+	rows, err := a.db.Query(`
+		SELECT id, COALESCE(email, ''), COALESCE(name, ''), provider, email_verified, created_at, last_login
+		FROM users
+		WHERE `+baseWhere+`
+		ORDER BY created_at DESC
+		LIMIT ? OFFSET ?
+	`, queryArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var customers []CustomerUserInfo
+	bannedCount := 0
+	now := time.Now().UTC().Format(time.RFC3339)
+	for rows.Next() {
+		var c CustomerUserInfo
+		var emailVerified int
+		var createdAt, lastLogin sql.NullString
+		if err := rows.Scan(&c.ID, &c.Email, &c.Name, &c.Provider, &emailVerified, &createdAt, &lastLogin); err != nil {
+			return nil, err
+		}
+		c.EmailVerified = emailVerified == 1
+		if createdAt.Valid && createdAt.String != "" {
+			c.CreatedAt = createdAt.String
+		}
+		if lastLogin.Valid && lastLogin.String != "" {
+			c.LastLogin = lastLogin.String
+		}
+
+		// Check if banned
+		var reason, unlocksAt string
+		err := a.db.QueryRow(
+			`SELECT reason, unlocks_at FROM login_bans WHERE (username = ? OR username = ?) AND unlocks_at > ? LIMIT 1`,
+			c.Email, c.ID, now,
+		).Scan(&reason, &unlocksAt)
+		if err == nil {
+			c.IsBanned = true
+			c.BanReason = reason
+			c.BanUnlocksAt = unlocksAt
+		}
+
+		customers = append(customers, c)
+	}
+
+	// Get global banned count (across all customers, not just current page)
+	var globalBanned int
+	err = a.db.QueryRow(`
+		SELECT COUNT(DISTINCT u.id) FROM users u
+		INNER JOIN login_bans b ON (b.username = COALESCE(u.email, '') OR b.username = u.id)
+		WHERE u.provider != 'admin_sub' AND u.id != 'admin' AND b.unlocks_at > ?
+	`, now).Scan(&globalBanned)
+	if err == nil {
+		bannedCount = globalBanned
+	}
+
+	return &CustomerListResult{
+		Customers:   customers,
+		Total:       total,
+		BannedCount: bannedCount,
+		Page:        page,
+		PageSize:    pageSize,
+	}, nil
+}
+
+// VerifyCustomerEmail manually marks a user's email as verified.
+func (a *App) VerifyCustomerEmail(userID string) error {
+	_, err := a.db.Exec(`UPDATE users SET email_verified = 1 WHERE id = ?`, userID)
+	return err
+}
+
+// DeleteCustomer removes a user account and their sessions.
+func (a *App) DeleteCustomer(userID string) error {
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Delete tokens and sessions first
+	_, _ = tx.Exec(`DELETE FROM email_tokens WHERE user_id = ?`, userID)
+	_, _ = tx.Exec(`DELETE FROM sessions WHERE user_id = ?`, userID)
+	// Delete user record
+	_, err = tx.Exec(`DELETE FROM users WHERE id = ?`, userID)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// BanCustomer manually bans a user's email or ID.
+func (a *App) BanCustomer(email string, reason string, days int) error {
+	if email == "" {
+		return fmt.Errorf("email is required")
+	}
+	if days <= 0 {
+		days = 3650 // Default to ~10 years
+	}
+	a.loginLimiter.AddManualBan(email, "", reason, time.Duration(days)*24*time.Hour)
+	return nil
+}
+
+// UnbanCustomer removes any manual bans for a user's email.
+func (a *App) UnbanCustomer(email string) error {
+	if email == "" {
+		return fmt.Errorf("email is required")
+	}
+	a.loginLimiter.Unban(email, "")
+	return nil
 }

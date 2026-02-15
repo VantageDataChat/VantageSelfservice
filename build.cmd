@@ -56,6 +56,22 @@ if %errorlevel% neq 0 (
 echo        Build OK
 echo.
 
+echo [3.5/4] Packaging built artifacts on server...
+set RELEASE_NAME=helpdesk_release_linux.tar.gz
+%SSHPASS% -p %PASS% ssh -o StrictHostKeyChecking=accept-new %USER%@%SERVER% "cd %REMOTE_DIR% && tar -czf %RELEASE_NAME% %BINARY_NAME% frontend"
+echo        Package OK
+echo.
+
+echo [3.6/4] Downloading release package to local...
+if exist %RELEASE_NAME% del /f %RELEASE_NAME%
+%SSHPASS% -p %PASS% scp -o StrictHostKeyChecking=accept-new -q %USER%@%SERVER%:%REMOTE_DIR%/%RELEASE_NAME% .
+if %errorlevel% neq 0 (
+    echo [ERROR] Download failed!
+) else (
+    echo        Download OK: %RELEASE_NAME%
+)
+echo.
+
 echo [4/4] Restarting service...
 %SSHPASS% -p %PASS% ssh -o StrictHostKeyChecking=accept-new %USER%@%SERVER% "chmod +x %REMOTE_DIR%/start.sh && bash %REMOTE_DIR%/start.sh"
 echo.
@@ -77,4 +93,4 @@ echo  URL: http://%SERVER%
 echo ============================================
 
 endlocal
-pause
+if %errorlevel% neq 0 pause

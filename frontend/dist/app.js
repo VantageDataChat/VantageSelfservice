@@ -16,6 +16,7 @@
     var adminCaptchaId = '';
     var urlProductName = ''; // product name from URL query string, e.g. ?askflow
     var maxUploadSizeMB = 500; // default, will be fetched from server
+    var cachedProducts = null; // shared product list cache to avoid duplicate fetches
 
     // Parse URL query string for product name: ?productName (bare key, no value)
     (function () {
@@ -28,6 +29,27 @@
             }
         }
     })();
+
+    // Shared product fetch — returns a promise, caches the result
+    var _productFetchPromise = null;
+    function fetchProducts() {
+        if (cachedProducts) {
+            return Promise.resolve(cachedProducts);
+        }
+        if (!_productFetchPromise) {
+            _productFetchPromise = fetch('/api/products')
+                .then(function (res) { return res.json(); })
+                .then(function (data) {
+                    cachedProducts = data.products || [];
+                    return cachedProducts;
+                })
+                .catch(function () {
+                    _productFetchPromise = null;
+                    return [];
+                });
+        }
+        return _productFetchPromise;
+    }
 
     // --- Routing ---
 
@@ -242,55 +264,7 @@
 
     window.loadLoginCaptcha = function () {
         loadCaptcha('user-login-captcha-question', 'login');
-        loadLoginProducts();
     };
-
-    function loadLoginProducts() {
-        var selector = document.getElementById('login-product-selector');
-        var select = document.getElementById('user-login-product');
-        if (!selector || !select) return;
-
-        fetch('/api/products')
-            .then(function (res) { return res.json(); })
-            .then(function (data) {
-                var products = data.products || [];
-                if (products.length === 0) {
-                    selector.classList.add('hidden');
-                    return;
-                }
-                // Clear existing options except the first placeholder
-                select.innerHTML = '<option value="" data-i18n="login_select_product">' + i18n.t('login_select_product') + '</option>';
-                for (var i = 0; i < products.length; i++) {
-                    var opt = document.createElement('option');
-                    opt.value = products[i].id;
-                    opt.textContent = products[i].name;
-                    select.appendChild(opt);
-                }
-
-                // URL-based product auto-selection: match by name (case-insensitive)
-                var urlMatched = false;
-                if (urlProductName) {
-                    var lowerURL = urlProductName.toLowerCase();
-                    for (var j = 0; j < products.length; j++) {
-                        if (products[j].name.toLowerCase() === lowerURL) {
-                            select.value = products[j].id;
-                            select.disabled = true;
-                            urlMatched = true;
-                            break;
-                        }
-                    }
-                }
-
-                // Auto-select if only one product (and not already matched by URL)
-                if (!urlMatched && products.length === 1) {
-                    select.value = products[0].id;
-                }
-                selector.classList.remove('hidden');
-            })
-            .catch(function () {
-                selector.classList.add('hidden');
-            });
-    }
 
     window.loadRegisterCaptcha = function () {
         loadCaptcha('user-register-captcha-question', 'register');
@@ -332,7 +306,6 @@
         var emailInput = document.getElementById('user-login-email');
         var passwordInput = document.getElementById('user-login-password');
         var captchaInput = document.getElementById('user-login-captcha');
-        var productSelect = document.getElementById('user-login-product');
         var errorEl = document.getElementById('user-login-error');
         var submitBtn = document.querySelector('#user-login-form .admin-submit-btn');
 
@@ -340,17 +313,6 @@
         var email = emailInput.value.trim();
         var password = passwordInput.value;
         var captchaAnswer = captchaInput ? parseInt(captchaInput.value.trim(), 10) : 0;
-
-        // Validate product selection if selector is visible
-        var selectedProductId = '';
-        var selectorVisible = document.getElementById('login-product-selector') && !document.getElementById('login-product-selector').classList.contains('hidden');
-        if (selectorVisible && productSelect) {
-            selectedProductId = productSelect.value;
-            if (!selectedProductId) {
-                if (errorEl) { errorEl.textContent = i18n.t('login_error_select_product'); errorEl.classList.remove('hidden'); }
-                return;
-            }
-        }
 
         if (!email || !password) {
             if (errorEl) { errorEl.textContent = i18n.t('login_error_email_password'); errorEl.classList.remove('hidden'); }
@@ -369,23 +331,22 @@
             body: JSON.stringify({ email: email, password: password, captcha_id: loginCaptchaId, captcha_answer: captchaAnswer })
         })
         .then(function (res) {
-            if (!res.ok) return res.json().then(function (d) { throw new Error(d.error || i18n.t('login_failed')); });
+            if (!res.ok) {
+                return res.text().then(function (text) {
+                    var msg = i18n.t('login_failed');
+                    try { var d = JSON.parse(text); if (d.error) msg = d.error; } catch (e) { /* non-JSON response (e.g. 504 from nginx) */ }
+                    throw new Error(msg);
+                });
+            }
             return res.json();
         })
         .then(function (data) {
             if (data.session) {
                 saveSession(data.session, data.user);
-                // Store selected product
-                if (selectedProductId) {
-                    localStorage.setItem('helpdesk_product_id', selectedProductId);
-                    // Also store product name for display
-                    if (productSelect) {
-                        var selectedOption = productSelect.options[productSelect.selectedIndex];
-                        if (selectedOption) localStorage.setItem('helpdesk_product_name', selectedOption.textContent);
-                    }
-                } else {
-                    localStorage.removeItem('helpdesk_product_id');
-                    localStorage.removeItem('helpdesk_product_name');
+                // Product selection is handled in chat page, just set user's default if available
+                var defaultPid = (data.user && data.user.default_product_id) ? data.user.default_product_id : '';
+                if (defaultPid) {
+                    localStorage.setItem('helpdesk_product_id', defaultPid);
                 }
                 navigate('/chat');
             }
@@ -419,7 +380,7 @@
 
         if (!email) { if (errorEl) { errorEl.textContent = i18n.t('register_error_email'); errorEl.classList.remove('hidden'); } return; }
         if (!password) { if (errorEl) { errorEl.textContent = i18n.t('register_error_password'); errorEl.classList.remove('hidden'); } return; }
-        if (password.length < 6) { if (errorEl) { errorEl.textContent = i18n.t('register_error_password_length'); errorEl.classList.remove('hidden'); } return; }
+        if (password.length < 8) { if (errorEl) { errorEl.textContent = i18n.t('register_error_password_length'); errorEl.classList.remove('hidden'); } return; }
         if (password !== confirm) { if (errorEl) { errorEl.textContent = i18n.t('register_error_password_mismatch'); errorEl.classList.remove('hidden'); } return; }
         if (!captchaInput || !captchaInput.value.trim()) { if (errorEl) { errorEl.textContent = i18n.t('register_error_captcha'); errorEl.classList.remove('hidden'); } return; }
 
@@ -679,6 +640,7 @@
         var nameEl = document.getElementById('chat-user-name');
         var loginBtn = document.getElementById('chat-login-btn');
         var logoutBtn = document.getElementById('chat-logout-btn');
+        var userMenu = document.getElementById('chat-user-menu');
         var session = getSession();
 
         if (nameEl) {
@@ -689,38 +651,227 @@
         }
         if (session) {
             if (loginBtn) loginBtn.classList.add('hidden');
-            if (logoutBtn) logoutBtn.classList.remove('hidden');
+            if (logoutBtn) logoutBtn.classList.add('hidden');
+            if (userMenu) userMenu.classList.remove('hidden');
         } else {
             if (loginBtn) loginBtn.classList.remove('hidden');
             if (logoutBtn) logoutBtn.classList.add('hidden');
+            if (userMenu) userMenu.classList.add('hidden');
         }
 
-        // Load product intro as welcome message if no messages yet
-        if (chatMessages.length === 0) {
-            var productId = localStorage.getItem('helpdesk_product_id') || '';
-            var introUrl = '/api/product-intro' + (productId ? '?product_id=' + encodeURIComponent(productId) : '');
-            fetch(introUrl)
-                .then(function (res) { return res.json(); })
-                .then(function (data) {
-                    if (data.product_intro) {
-                        chatMessages.push({
-                            role: 'system',
-                            content: data.product_intro,
-                            sources: [],
-                            isPending: false,
-                            isWelcome: true,
-                            timestamp: Date.now()
-                        });
-                    }
-                    renderChatMessages();
-                })
-                .catch(function () {
-                    renderChatMessages();
-                });
-        } else {
-            renderChatMessages();
-        }
+        // Load products and resolve initial product in one flow (shared cache)
+        loadChatProducts();
+        resolveInitialProduct(function () {
+            if (chatMessages.length === 0) {
+                loadWelcomeMessage();
+            } else {
+                renderChatMessages();
+            }
+        });
+
         setupChatInput();
+
+        // Close dropdown when clicking outside
+        document.addEventListener('click', function (e) {
+            var dropdown = document.getElementById('chat-user-dropdown');
+            var menu = document.getElementById('chat-user-menu');
+            if (dropdown && menu && !menu.contains(e.target)) {
+                dropdown.classList.add('hidden');
+            }
+        });
+    }
+
+    // Load products into the chat header product selector
+    function loadChatProducts() {
+        var selector = document.getElementById('chat-product-selector');
+        var defaultSelect = document.getElementById('chat-default-product');
+        if (!selector) return;
+
+        fetchProducts()
+            .then(function (products) {
+                if (products.length === 0) {
+                    selector.classList.add('hidden');
+                    return;
+                }
+                // Populate chat header selector (no "all products" option)
+                selector.innerHTML = '';
+                var defaultHTML = '<option value="" data-i18n="chat_no_default_product">' + i18n.t('chat_no_default_product') + '</option>';
+                // Filter out "all products" entries
+                var filtered = products.filter(function (p) {
+                    var n = (p.name || '').trim().toLowerCase();
+                    return n !== '全部产品' && n !== 'all products';
+                });
+                if (filtered.length === 0) {
+                    selector.classList.add('hidden');
+                    return;
+                }
+                for (var i = 0; i < filtered.length; i++) {
+                    var opt = '<option value="' + filtered[i].id + '">' + escapeHtml(filtered[i].name) + '</option>';
+                    selector.innerHTML += opt;
+                    defaultHTML += opt;
+                }
+                if (defaultSelect) defaultSelect.innerHTML = defaultHTML;
+
+                // Set current product, default to first product if none selected
+                var currentPid = localStorage.getItem('helpdesk_product_id') || '';
+                if (currentPid) {
+                    selector.value = currentPid;
+                } else if (filtered.length > 0) {
+                    // Default to first product
+                    selector.value = filtered[0].id;
+                    localStorage.setItem('helpdesk_product_id', filtered[0].id);
+                    localStorage.setItem('helpdesk_product_name', filtered[0].name);
+                }
+
+                // Set default product in dropdown
+                var session = getSession();
+                if (session && defaultSelect) {
+                    var token = session.id || session.session_id || '';
+                    fetch('/api/user/preferences', {
+                        headers: { 'Authorization': 'Bearer ' + token }
+                    })
+                    .then(function (res) { return res.json(); })
+                    .then(function (pref) {
+                        if (pref.default_product_id && defaultSelect) {
+                            defaultSelect.value = pref.default_product_id;
+                        }
+                    })
+                    .catch(function () { /* ignore */ });
+                }
+
+                selector.classList.remove('hidden');
+
+                // Listen for product switch (bind only once)
+                if (!selector._changeListenerBound) {
+                    selector._changeListenerBound = true;
+                    selector.addEventListener('change', function () {
+                        var newPid = this.value;
+                        if (newPid) {
+                            localStorage.setItem('helpdesk_product_id', newPid);
+                            var selOpt = this.options[this.selectedIndex];
+                            if (selOpt) localStorage.setItem('helpdesk_product_name', selOpt.textContent);
+                        } else {
+                            localStorage.removeItem('helpdesk_product_id');
+                            localStorage.removeItem('helpdesk_product_name');
+                        }
+                        // Clear chat and load new welcome message
+                        chatMessages = [];
+                        loadWelcomeMessage();
+                    });
+                }
+            })
+            .catch(function () {
+                selector.classList.add('hidden');
+            });
+    }
+
+    // Resolve initial product: URL param > user default > localStorage
+    function resolveInitialProduct(callback) {
+        // 1. URL parameter takes highest priority
+        if (urlProductName) {
+            fetchProducts()
+                .then(function (products) {
+                    var lowerURL = urlProductName.toLowerCase();
+                    for (var j = 0; j < products.length; j++) {
+                        if (products[j].name.toLowerCase() === lowerURL) {
+                            localStorage.setItem('helpdesk_product_id', products[j].id);
+                            localStorage.setItem('helpdesk_product_name', products[j].name);
+                            var selector = document.getElementById('chat-product-selector');
+                            if (selector) selector.value = products[j].id;
+                            break;
+                        }
+                    }
+                    if (callback) callback();
+                })
+                .catch(function () { if (callback) callback(); });
+            return;
+        }
+
+        // 2. If no localStorage product, try user's default
+        if (!localStorage.getItem('helpdesk_product_id')) {
+            var session = getSession();
+            if (session) {
+                var token = session.id || session.session_id || '';
+                fetch('/api/user/preferences', {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                })
+                .then(function (res) { return res.json(); })
+                .then(function (pref) {
+                    if (pref.default_product_id) {
+                        localStorage.setItem('helpdesk_product_id', pref.default_product_id);
+                        var selector = document.getElementById('chat-product-selector');
+                        if (selector) selector.value = pref.default_product_id;
+                    }
+                    if (callback) callback();
+                })
+                .catch(function () { if (callback) callback(); });
+                return;
+            }
+        }
+
+        if (callback) callback();
+    }
+
+    // Load welcome message for current product
+    function loadWelcomeMessage() {
+        var productId = localStorage.getItem('helpdesk_product_id') || '';
+        var introUrl = '/api/product-intro' + (productId ? '?product_id=' + encodeURIComponent(productId) : '');
+        fetch(introUrl)
+            .then(function (res) { return res.json(); })
+            .then(function (data) {
+                if (data.product_intro) {
+                    chatMessages.push({
+                        role: 'system',
+                        content: data.product_intro,
+                        sources: [],
+                        isPending: false,
+                        isWelcome: true,
+                        timestamp: Date.now()
+                    });
+                }
+                renderChatMessages();
+            })
+            .catch(function () {
+                renderChatMessages();
+            });
+    }
+
+    // Toggle user profile dropdown
+    window.toggleUserDropdown = function () {
+        var dropdown = document.getElementById('chat-user-dropdown');
+        if (dropdown) dropdown.classList.toggle('hidden');
+    };
+
+    // Save default product preference
+    window.saveDefaultProduct = function () {
+        var select = document.getElementById('chat-default-product');
+        if (!select) return;
+        var session = getSession();
+        if (!session) return;
+        var token = session.id || session.session_id || '';
+        fetch('/api/user/preferences', {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + token
+            },
+            body: JSON.stringify({ default_product_id: select.value })
+        })
+        .then(function (res) {
+            if (res.ok) {
+                showChatToast(i18n.t('chat_default_product_saved') || '默认产品已保存', 'success');
+            }
+        })
+        .catch(function () { /* ignore */ });
+    };
+
+    function showChatToast(message, type) {
+        type = type || 'info';
+        var toast = document.getElementById('chat-toast');
+        if (!toast) return;
+        toast.textContent = message;
+        toast.className = 'toast toast-' + type;
+        setTimeout(function () { toast.classList.add('hidden'); }, 3000);
     }
 
     function setupChatInput() {
@@ -1033,8 +1184,8 @@
 
         html += '<span class="chat-msg-time">' + timeStr + '</span>';
 
-        // Add "Not Satisfied" button for non-pending, non-welcome system answers
-        if (!msg.isPending && !msg.isWelcome && msg.content) {
+        // Add "Not Satisfied" button for non-pending, non-welcome, non-error system answers
+        if (!msg.isPending && !msg.isWelcome && !msg.isError && msg.content) {
             html += '<button class="chat-not-satisfied-btn" onclick="window.handleNotSatisfied(this, ' + i + ')">👎 ' + i18n.t('chat_not_satisfied') + '</button>';
         }
 
@@ -1249,7 +1400,15 @@
                 body: JSON.stringify(reqBody)
             })
             .then(function (res) {
-                if (!res.ok) throw new Error('failed');
+                if (!res.ok) {
+                    // Handle 401 Unauthorized - session expired or invalid
+                    if (res.status === 401) {
+                        clearSession();
+                        navigate('/login');
+                        throw new Error(i18n.t('session_expired') || '会话已过期，请重新登录');
+                    }
+                    throw new Error('failed');
+                }
                 return res.json();
             })
             .then(function () {
@@ -1382,6 +1541,12 @@
         })
         .then(function (res) {
             if (!res.ok) {
+                // Handle 401 Unauthorized - session expired or invalid
+                if (res.status === 401) {
+                    clearSession();
+                    navigate('/login');
+                    throw new Error(i18n.t('session_expired') || '会话已过期，请重新登录');
+                }
                 return res.text().then(function (text) {
                     try {
                         var d = JSON.parse(text);
@@ -1417,6 +1582,7 @@
                 content: errMsg,
                 sources: [],
                 isPending: false,
+                isError: true,
                 timestamp: Date.now()
             });
         })
@@ -1449,7 +1615,15 @@
         options = options || {};
         options.headers = options.headers || {};
         options.headers['Authorization'] = 'Bearer ' + getAdminToken();
-        return fetch(url, options);
+        return fetch(url, options).then(function (res) {
+            if (res.status === 401) {
+                // Session expired or invalid — redirect to login
+                clearAdminSession();
+                showAdminToast(i18n.t('admin_session_expired') || '会话已过期，请重新登录', 'error');
+                setTimeout(function () { navigate(adminLoginRoute || '/admin'); }, 1500);
+            }
+            return res;
+        });
     }
 
     function downloadDocument(docId, fileName) {
@@ -1509,6 +1683,215 @@
         if (tab === 'users') { loadAdminUsers(); loadProductCheckboxes(); }
         if (tab === 'products') loadProducts();
         if (tab === 'bans') loadLoginBans();
+        if (tab === 'customers') { loadAdminCustomers(); i18n.applyI18nToPage(); }
+    };
+
+    // --- Customer Management ---
+
+    var pendingBanEmail = '';
+    var customerPage = 1;
+    var customerPageSize = 20;
+    var customerSearch = '';
+
+    window.loadAdminCustomers = function (page, search) {
+        var tbody = document.getElementById('admin-customers-tbody');
+        if (!tbody) return;
+
+        if (typeof page === 'number') customerPage = page;
+        if (typeof search === 'string') customerSearch = search;
+
+        var url = '/api/admin/customers?page=' + customerPage + '&page_size=' + customerPageSize;
+        if (customerSearch) url += '&search=' + encodeURIComponent(customerSearch);
+
+        adminFetch(url)
+            .then(function (res) {
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                return res.json();
+            })
+            .then(function (data) {
+                var customers = data.customers || [];
+                var total = data.total || 0;
+                var bannedCount = data.banned_count || 0;
+
+                // Update stats
+                var totalEl = document.getElementById('admin-customers-total-count');
+                var bannedEl = document.getElementById('admin-customers-banned-count');
+                if (totalEl) totalEl.textContent = total;
+                if (bannedEl) bannedEl.textContent = bannedCount;
+
+                if (customers.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" class="admin-table-empty">' + i18n.t('admin_customers_empty') + '</td></tr>';
+                    renderCustomerPagination(0, 1);
+                    return;
+                }
+
+                tbody.innerHTML = '';
+                customers.forEach(function (c) {
+                    var tr = document.createElement('tr');
+                    
+                    var statusText = '';
+                    var statusClass = '';
+                    if (c.is_banned) {
+                        statusText = i18n.t('admin_customers_status_banned');
+                        statusClass = 'status-failed';
+                    } else if (c.email_verified) {
+                        statusText = i18n.t('admin_customers_status_verified');
+                        statusClass = 'status-success';
+                    } else {
+                        statusText = i18n.t('admin_customers_status_unverified');
+                        statusClass = 'status-processing';
+                    }
+
+                    var actions = '';
+                    if (!c.email_verified && !c.is_banned) {
+                        actions += '<button class="btn-table btn-secondary" onclick="handleVerifyCustomer(\'' + c.id + '\')">' + i18n.t('admin_customers_verify_btn') + '</button>';
+                    }
+                    
+                    if (c.is_banned) {
+                        actions += '<button class="btn-table btn-secondary" onclick="handleUnbanCustomer(\'' + c.email + '\')">' + i18n.t('admin_customers_unban_btn') + '</button>';
+                    } else {
+                        actions += '<button class="btn-table btn-secondary" onclick="handleBanCustomer(\'' + c.email + '\')">' + i18n.t('admin_customers_ban_btn') + '</button>';
+                    }
+                    
+                    actions += '<button class="btn-table btn-danger" onclick="handleDeleteCustomer(\'' + c.id + '\')">' + i18n.t('admin_customers_delete_btn') + '</button>';
+
+                    tr.innerHTML = 
+                        '<td>' + (escapeHtml(c.name) || '--') + '</td>' +
+                        '<td>' + (escapeHtml(c.email) || '--') + '</td>' +
+                        '<td><span class="status-badge ' + statusClass + '">' + statusText + '</span></td>' +
+                        '<td>' + (c.created_at || '--') + '</td>' +
+                        '<td>' + (c.last_login || '--') + '</td>' +
+                        '<td class="admin-table-actions">' + actions + '</td>';
+                    tbody.appendChild(tr);
+                });
+
+                renderCustomerPagination(total, customerPage);
+                i18n.applyI18nToPage();
+            })
+            .catch(function (err) {
+                console.error('Load customers error:', err);
+                showAdminToast(i18n.t('admin_doc_load_failed'), 'error');
+            });
+    };
+
+    function renderCustomerPagination(total, currentPage) {
+        var container = document.getElementById('admin-customers-pagination');
+        if (!container) return;
+        var totalPages = Math.max(1, Math.ceil(total / customerPageSize));
+        if (totalPages <= 1) {
+            container.innerHTML = '';
+            return;
+        }
+        var html = '';
+        // Prev button
+        html += '<button class="btn-secondary" style="padding:0.3rem 0.7rem;font-size:0.85rem;" ' +
+            (currentPage <= 1 ? 'disabled' : 'onclick="loadAdminCustomers(' + (currentPage - 1) + ')"') + '>&laquo;</button>';
+        // Page numbers (show max 7 pages around current)
+        var startP = Math.max(1, currentPage - 3);
+        var endP = Math.min(totalPages, currentPage + 3);
+        if (startP > 1) html += '<span style="padding:0 0.3rem;">...</span>';
+        for (var p = startP; p <= endP; p++) {
+            if (p === currentPage) {
+                html += '<button class="btn-secondary" style="padding:0.3rem 0.7rem;font-size:0.85rem;background:#4F46E5;color:#fff;border-color:#4F46E5;" disabled>' + p + '</button>';
+            } else {
+                html += '<button class="btn-secondary" style="padding:0.3rem 0.7rem;font-size:0.85rem;" onclick="loadAdminCustomers(' + p + ')">' + p + '</button>';
+            }
+        }
+        if (endP < totalPages) html += '<span style="padding:0 0.3rem;">...</span>';
+        // Next button
+        html += '<button class="btn-secondary" style="padding:0.3rem 0.7rem;font-size:0.85rem;" ' +
+            (currentPage >= totalPages ? 'disabled' : 'onclick="loadAdminCustomers(' + (currentPage + 1) + ')"') + '>&raquo;</button>';
+        container.innerHTML = html;
+    }
+
+    window.searchCustomers = function () {
+        var input = document.getElementById('admin-customers-search');
+        customerSearch = input ? input.value.trim() : '';
+        customerPage = 1;
+        loadAdminCustomers(1, customerSearch);
+    };
+
+    window.clearCustomerSearch = function () {
+        var input = document.getElementById('admin-customers-search');
+        if (input) input.value = '';
+        customerSearch = '';
+        customerPage = 1;
+        loadAdminCustomers(1, '');
+    };
+
+    window.handleVerifyCustomer = function (userId) {
+        if (!confirm(i18n.t('admin_customer_verify_confirm'))) return;
+        adminFetch('/api/admin/customers/verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_id: userId })
+        })
+        .then(function (res) {
+            if (!res.ok) throw new Error('Failed');
+            showAdminToast(i18n.t('admin_settings_saved'), 'success');
+            loadAdminCustomers();
+        })
+        .catch(function () { showAdminToast(i18n.t('admin_settings_save_failed'), 'error'); });
+    };
+
+    window.handleDeleteCustomer = function (userId) {
+        if (!confirm(i18n.t('admin_customer_delete_confirm'))) return;
+        adminFetch('/api/admin/customers/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_id: userId })
+        })
+        .then(function (res) {
+            if (!res.ok) throw new Error('Failed');
+            showAdminToast(i18n.t('admin_delete_success'), 'success');
+            loadAdminCustomers();
+        })
+        .catch(function () { showAdminToast(i18n.t('admin_delete_failed'), 'error'); });
+    };
+
+    window.handleBanCustomer = function (email) {
+        pendingBanEmail = email;
+        var dialog = document.getElementById('admin-customer-ban-dialog');
+        var msg = document.getElementById('admin-customer-ban-msg');
+        if (msg) msg.textContent = email;
+        if (dialog) dialog.classList.remove('hidden');
+    };
+
+    window.closeCustomerBanDialog = function () {
+        var dialog = document.getElementById('admin-customer-ban-dialog');
+        if (dialog) dialog.classList.add('hidden');
+    };
+
+    window.confirmCustomerBan = function () {
+        var reason = document.getElementById('admin-customer-ban-reason').value.trim();
+        var days = parseInt(document.getElementById('admin-customer-ban-days').value);
+        
+        adminFetch('/api/admin/customers/ban', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: pendingBanEmail, reason: reason, days: days })
+        })
+        .then(function (res) {
+            if (!res.ok) throw new Error('Failed');
+            showAdminToast(i18n.t('admin_bans_added'), 'success');
+            closeCustomerBanDialog();
+            loadAdminCustomers();
+        })
+        .catch(function () { showAdminToast(i18n.t('admin_bans_add_failed'), 'error'); });
+    };
+
+    window.handleUnbanCustomer = function (email) {
+        adminFetch('/api/admin/customers/unban', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: email })
+        })
+        .then(function (res) {
+            if (!res.ok) throw new Error('Failed');
+            showAdminToast(i18n.t('admin_bans_unbanned'), 'success');
+            loadAdminCustomers();
+        })
+        .catch(function () { showAdminToast(i18n.t('admin_bans_unban_failed'), 'error'); });
     };
 
     function initAdmin() {
@@ -1544,16 +1927,19 @@
         var usersNav = document.querySelector('.admin-nav-item[data-tab="users"]');
         var productsNav = document.querySelector('.admin-nav-item[data-tab="products"]');
         var bansNav = document.querySelector('.admin-nav-item[data-tab="bans"]');
+        var customersNav = document.querySelector('.admin-nav-item[data-tab="customers"]');
         if (adminRole !== 'super_admin') {
             if (settingsNav) settingsNav.style.display = 'none';
             if (usersNav) usersNav.style.display = 'none';
             if (productsNav) productsNav.style.display = 'none';
             if (bansNav) bansNav.style.display = 'none';
+            if (customersNav) customersNav.style.display = 'none';
         } else {
             if (settingsNav) settingsNav.style.display = '';
             if (usersNav) usersNav.style.display = '';
             if (productsNav) productsNav.style.display = '';
             if (bansNav) bansNav.style.display = '';
+            if (customersNav) customersNav.style.display = '';
         }
     }
 
@@ -3524,46 +3910,40 @@
         // Check for OAuth callback first
         if (handleOAuthCallbackFromURL()) return;
 
-        // Fetch admin login route, product name, OAuth providers, and system status
-        var promises = [];
+        // Pre-warm product cache early (used by login page and chat page)
+        fetchProducts();
 
-        promises.push(
-            fetch('/api/system/status')
-                .then(function (res) { return res.json(); })
-                .then(function (data) {
-                    systemReady = !!data.ready;
-                })
-                .catch(function () { systemReady = true; /* assume ready on error */ })
-        );
+        // Fetch app-info in parallel (non-blocking, doesn't affect routing)
+        fetch('/api/app-info')
+            .then(function (res) { return res.json(); })
+            .then(function (data) {
+                if (data.oauth_providers) {
+                    renderOAuthLoginButtons(data.oauth_providers);
+                }
+                if (data.max_upload_size_mb) {
+                    maxUploadSizeMB = data.max_upload_size_mb;
+                }
+            })
+            .catch(function () { /* ignore */ });
 
-        promises.push(
-            fetch('/api/admin/status')
-                .then(function (res) { return res.json(); })
-                .then(function (data) {
-                    if (data.login_route) adminLoginRoute = data.login_route;
-                })
-                .catch(function () { /* use default */ })
-        );
+        // system/status and admin/status affect routing, so wait for them before rendering
+        var p1 = fetch('/api/system/status')
+            .then(function (res) { return res.json(); })
+            .then(function (data) { systemReady = !!data.ready; })
+            .catch(function () { systemReady = true; });
 
-        promises.push(
-            fetchProductName()
-        );
+        var p2 = fetch('/api/admin/status')
+            .then(function (res) { return res.json(); })
+            .then(function (data) {
+                if (data.login_route) adminLoginRoute = data.login_route;
+            })
+            .catch(function () { /* use default */ });
 
-        promises.push(
-            fetch('/api/app-info')
-                .then(function (res) { return res.json(); })
-                .then(function (data) {
-                    if (data.oauth_providers) {
-                        renderOAuthLoginButtons(data.oauth_providers);
-                    }
-                    if (data.max_upload_size_mb) {
-                        maxUploadSizeMB = data.max_upload_size_mb;
-                    }
-                })
-                .catch(function () { /* ignore */ })
-        );
-
-        Promise.all(promises).then(function () {
+        Promise.all([p1, p2]).then(function () {
+            handleRoute();
+            // Fetch translated product name in background (LLM call, can be slow)
+            fetchProductName();
+        }).catch(function () {
             handleRoute();
         });
     }

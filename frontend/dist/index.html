@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>软件自助服务平台</title>
-    <link rel="stylesheet" href="/styles.css?v=20260212-4">
-    <script src="/i18n.js?v=20260212-4"></script>
+    <link rel="stylesheet" href="/styles.css?v=20260216-1">
+    <script src="/i18n.js?v=20260216-1"></script>
 </head>
 <body>
     <div id="app">
@@ -48,13 +48,6 @@
                     <div id="user-login-form" class="admin-login-form">
                         <p class="login-subtitle" style="text-align:center;margin-bottom:1rem;" data-i18n="login_subtitle">登录您的账号</p>
 
-                        <!-- Product Selector -->
-                        <div id="login-product-selector" class="login-product-selector hidden">
-                            <select id="user-login-product" class="login-product-select">
-                                <option value="" data-i18n="login_select_product">请选择产品</option>
-                            </select>
-                        </div>
-
                         <!-- OAuth Buttons (dynamically populated) -->
                         <div id="oauth-login-buttons" class="oauth-buttons hidden"></div>
                         <div id="oauth-login-divider" class="login-divider hidden"><span data-i18n="login_divider_or">或</span></div>
@@ -78,7 +71,7 @@
                         <div class="input-group">
                             <input type="text" id="user-register-name" data-i18n-placeholder="register_name" placeholder="昵称" autocomplete="name">
                             <input type="email" id="user-register-email" data-i18n-placeholder="register_email" placeholder="邮箱" autocomplete="email">
-                            <input type="password" id="user-register-password" data-i18n-placeholder="register_password" placeholder="密码（至少6位）" autocomplete="new-password">
+                            <input type="password" id="user-register-password" data-i18n-placeholder="register_password" placeholder="密码（至少8位，需含字母和数字）" autocomplete="new-password">
                             <input type="password" id="user-register-password-confirm" data-i18n-placeholder="register_password_confirm" placeholder="确认密码" autocomplete="new-password">
                             <div class="captcha-row">
                                 <input type="text" id="user-register-captcha" data-i18n-placeholder="register_captcha" placeholder="验证码答案" autocomplete="off" class="captcha-input">
@@ -170,8 +163,22 @@
                         <span class="chat-header-title" data-i18n="chat_title" data-product-name>软件自助服务平台</span>
                     </div>
                     <div class="chat-header-right">
+                        <select id="chat-product-selector" class="chat-product-select hidden">
+                        </select>
                         <button id="lang-switch-btn" class="lang-switch-btn" onclick="i18n.toggleLang(); i18n.applyI18nToPage();">EN</button>
-                        <span id="chat-user-name" class="chat-user-name"></span>
+                        <div id="chat-user-menu" class="chat-user-menu hidden">
+                            <span id="chat-user-name" class="chat-user-name" onclick="toggleUserDropdown()"></span>
+                            <div id="chat-user-dropdown" class="chat-user-dropdown hidden">
+                                <div class="dropdown-section">
+                                    <label class="dropdown-label" data-i18n="chat_default_product">默认产品</label>
+                                    <select id="chat-default-product" class="dropdown-product-select" onchange="saveDefaultProduct()">
+                                        <option value="" data-i18n="chat_no_default_product">不设置</option>
+                                    </select>
+                                </div>
+                                <div class="dropdown-divider"></div>
+                                <button class="dropdown-btn" onclick="logout()" data-i18n="chat_logout_btn">退出登录</button>
+                            </div>
+                        </div>
                         <button id="chat-login-btn" class="chat-logout-btn hidden" onclick="navigate('/login')" data-i18n="chat_login_btn">登录</button>
                         <button id="chat-logout-btn" class="chat-logout-btn hidden" onclick="logout()" data-i18n="chat_logout_btn">退出登录</button>
                     </div>
@@ -214,6 +221,7 @@
                     </div>
                 </div>
             </div>
+            <div id="chat-toast" class="toast hidden"></div>
         </div>
 
         <!-- Admin Page -->
@@ -261,8 +269,13 @@
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
                             <span data-i18n="admin_nav_bans">登录限制</span>
                         </button>
+                        <button class="admin-nav-item" data-tab="customers" onclick="switchAdminTab('customers')">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+                            <span data-i18n="admin_nav_customers">客户管理</span>
+                        </button>
                     </nav>
                     <div class="admin-sidebar-footer">
+                        <div class="admin-version-info" style="text-align:center;font-size:0.75rem;color:#9ca3af;margin-bottom:6px;">V1.0Beta</div>
                         <div class="admin-user-info">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
                             <span id="admin-username-display" class="admin-username">--</span>
@@ -300,15 +313,15 @@
                                 </div>
                                 <div class="admin-url-input">
                                     <input type="text" id="admin-url-field" data-i18n-placeholder="admin_doc_url_placeholder" placeholder="输入文档URL地址">
-                                    <button class="btn-primary" id="admin-url-preview-btn" onclick="handleAdminURLPreview()" data-i18n="admin_doc_url_preview">预览内容</button>
+                                    <button type="button" class="btn-primary" id="admin-url-preview-btn" onclick="handleAdminURLPreview()" data-i18n="admin_doc_url_preview">预览内容</button>
                                     <span id="admin-url-spinner" class="inline-spinner hidden"></span>
                                 </div>
                                 <div id="admin-url-preview-area" class="hidden" style="margin-top:0.75rem;">
                                     <div style="font-size:0.85rem;color:#6b7280;margin-bottom:0.5rem;" data-i18n="admin_doc_url_preview_hint">以下是从URL获取的内容预览，确认无误后点击提交：</div>
                                     <div id="admin-url-preview-content" style="max-height:300px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:8px;padding:0.75rem;font-size:0.85rem;background:#f9fafb;white-space:pre-wrap;word-break:break-all;"></div>
                                     <div style="margin-top:0.5rem;display:flex;gap:0.5rem;align-items:center;">
-                                        <button class="btn-primary" id="admin-url-confirm-btn" onclick="handleAdminURLConfirm()" data-i18n="admin_doc_url_confirm">确认提交</button>
-                                        <button class="btn-secondary" onclick="handleAdminURLCancel()" data-i18n="admin_doc_url_cancel">取消</button>
+                                        <button type="button" class="btn-primary" id="admin-url-confirm-btn" onclick="handleAdminURLConfirm()" data-i18n="admin_doc_url_confirm">确认提交</button>
+                                        <button type="button" class="btn-secondary" onclick="handleAdminURLCancel()" data-i18n="admin_doc_url_cancel">取消</button>
                                         <span id="admin-url-confirm-spinner" class="inline-spinner hidden"></span>
                                     </div>
                                 </div>
@@ -371,7 +384,7 @@
                                             <span class="admin-form-hint" data-i18n="admin_settings_port_hint">修改端口后需重启服务才能生效</span>
                                         </div>
                                         <div style="display:flex;align-items:flex-end;">
-                                            <button class="btn-secondary" id="server-restart-btn" onclick="restartServer()" data-i18n="admin_settings_restart">重启服务</button>
+                                            <button type="button" class="btn-secondary" id="server-restart-btn" onclick="restartServer()" data-i18n="admin_settings_restart">重启服务</button>
                                         </div>
                                     </div>
                                 </fieldset>
@@ -528,7 +541,7 @@
                                         <label data-i18n="admin_settings_smtp_test">测试发送</label>
                                         <div style="display:flex;gap:0.5rem;">
                                             <input type="email" id="cfg-smtp-test-email" data-i18n-placeholder="admin_settings_smtp_test_placeholder" placeholder="收件人邮箱" style="flex:1;">
-                                            <button class="btn-secondary" id="smtp-test-btn" onclick="testSmtpEmail()" data-i18n="admin_settings_smtp_test_btn">发送测试邮件</button>
+                                            <button type="button" class="btn-secondary" id="smtp-test-btn" onclick="testSmtpEmail()" data-i18n="admin_settings_smtp_test_btn">发送测试邮件</button>
                                         </div>
                                         <p id="smtp-test-result" class="hidden" style="margin-top:0.5rem;font-size:0.85rem;"></p>
                                     </div>
@@ -556,7 +569,7 @@
                                                 <option value="amazon">Amazon</option>
                                                 <option value="facebook">Facebook</option>
                                             </select>
-                                            <button class="btn-secondary" onclick="addOAuthProviderForm()" data-i18n="admin_settings_oauth_add_btn">添加</button>
+                                            <button type="button" class="btn-secondary" onclick="addOAuthProviderForm()" data-i18n="admin_settings_oauth_add_btn">添加</button>
                                         </div>
                                     </div>
                                 </fieldset>
@@ -580,7 +593,7 @@
                                 </fieldset>
 
                                 <div class="admin-form-actions">
-                                    <button class="btn-primary" onclick="saveAdminSettings()" data-i18n="admin_settings_save">保存设置</button>
+                                    <button type="button" class="btn-primary" onclick="saveAdminSettings()" data-i18n="admin_settings_save">保存设置</button>
                                 </div>
                             </div>
                         </div>
@@ -635,7 +648,7 @@
                                     </div>
                                 </fieldset>
                                 <div class="admin-form-actions">
-                                    <button class="btn-primary" id="knowledge-submit-btn" onclick="submitKnowledgeEntry()" data-i18n="admin_knowledge_submit">提交录入</button>
+                                    <button type="button" class="btn-primary" id="knowledge-submit-btn" onclick="submitKnowledgeEntry()" data-i18n="admin_knowledge_submit">提交录入</button>
                                 </div>
                             </div>
                         </div>
@@ -670,7 +683,7 @@
                                         <textarea id="product-new-welcome" rows="3" data-i18n-placeholder="admin_products_welcome_placeholder" placeholder="用户选择该产品后显示的欢迎消息（可选）"></textarea>
                                     </div>
                                     <div class="admin-form-actions">
-                                        <button class="btn-primary" onclick="createProduct()" data-i18n="admin_products_add_btn">添加产品</button>
+                                        <button type="button" class="btn-primary" onclick="createProduct()" data-i18n="admin_products_add_btn">添加产品</button>
                                     </div>
                                 </fieldset>
                                 <fieldset class="admin-fieldset">
@@ -827,7 +840,7 @@
                                 </fieldset>
 
                                 <div class="admin-form-actions">
-                                    <button class="btn-primary" onclick="saveMultimodalSettings()" data-i18n="admin_multimodal_save">保存多模态设置</button>
+                                    <button type="button" class="btn-primary" onclick="saveMultimodalSettings()" data-i18n="admin_multimodal_save">保存多模态设置</button>
                                 </div>
                             </div>
                         </div>
@@ -866,7 +879,7 @@
                                         <span class="admin-form-hint" data-i18n="admin_users_products_hint">选择该用户可管理的产品，不选则可管理所有产品</span>
                                     </div>
                                     <div class="admin-form-actions">
-                                        <button class="btn-primary" onclick="createAdminUser()" data-i18n="admin_users_add_btn">添加用户</button>
+                                        <button type="button" class="btn-primary" onclick="createAdminUser()" data-i18n="admin_users_add_btn">添加用户</button>
                                     </div>
                                 </fieldset>
                                 <fieldset class="admin-fieldset">
@@ -922,7 +935,7 @@
                                         </div>
                                     </div>
                                     <div class="admin-form-actions">
-                                        <button class="btn-primary" onclick="addLoginBan()" data-i18n="admin_bans_add_btn">添加限制</button>
+                                        <button type="button" class="btn-primary" onclick="addLoginBan()" data-i18n="admin_bans_add_btn">添加限制</button>
                                     </div>
                                 </fieldset>
                                 <fieldset class="admin-fieldset">
@@ -948,7 +961,68 @@
                             </div>
                         </div>
                     </div>
+                    <!-- Customers Tab -->
+                    <div id="admin-tab-customers" class="admin-tab hidden">
+                        <div class="admin-tab-header">
+                            <h2 data-i18n="admin_customers_title">客户管理</h2>
+                        </div>
+                        <div class="admin-tab-body">
+                            <!-- Stats -->
+                            <div id="admin-customers-stats" style="display:flex;gap:1.5rem;margin-bottom:1rem;">
+                                <span style="font-size:0.95rem;color:#555;"><span data-i18n="admin_customers_total">总客户数</span>: <strong id="admin-customers-total-count">0</strong></span>
+                                <span style="font-size:0.95rem;color:#555;"><span data-i18n="admin_customers_banned_count">已禁用</span>: <strong id="admin-customers-banned-count" style="color:#e53e3e;">0</strong></span>
+                            </div>
+                            <!-- Search -->
+                            <div style="margin-bottom:1rem;display:flex;gap:0.5rem;align-items:center;">
+                                <input type="text" id="admin-customers-search" data-i18n-placeholder="admin_customers_search_placeholder" placeholder="按邮箱搜索..." onkeydown="if(event.key==='Enter')searchCustomers()" style="padding:0.4rem 0.7rem;border:1px solid #d1d5db;border-radius:6px;width:260px;font-size:0.9rem;">
+                                <button class="btn-secondary" onclick="searchCustomers()" data-i18n="admin_customers_search_btn" style="padding:0.4rem 1rem;">搜索</button>
+                                <button class="btn-secondary" onclick="clearCustomerSearch()" data-i18n="admin_customers_search_clear" style="padding:0.4rem 1rem;">清除</button>
+                            </div>
+                            <fieldset class="admin-fieldset">
+                                <legend data-i18n="admin_customers_list_legend">注册客户列表</legend>
+                                <div id="admin-customers-table-wrap">
+                                    <table class="admin-table">
+                                        <thead>
+                                            <tr>
+                                                <th data-i18n="admin_customers_th_name">名称</th>
+                                                <th data-i18n="admin_customers_th_email">邮箱</th>
+                                                <th data-i18n="admin_customers_th_status">状态</th>
+                                                <th data-i18n="admin_customers_th_time">注册时间</th>
+                                                <th data-i18n="admin_customers_th_login">最后登录</th>
+                                                <th data-i18n="admin_customers_th_action">操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="admin-customers-tbody">
+                                            <tr><td colspan="6" class="admin-table-empty" data-i18n="admin_customers_empty">暂无客户数据</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <!-- Pagination -->
+                                <div id="admin-customers-pagination" style="display:flex;justify-content:center;align-items:center;gap:0.5rem;margin-top:1rem;"></div>
+                            </fieldset>
+                        </div>
+                    </div>
                 </main>
+            </div>
+
+            <!-- Customer Ban Dialog -->
+            <div id="admin-customer-ban-dialog" class="admin-dialog-overlay hidden">
+                <div class="admin-dialog">
+                    <h3 data-i18n="admin_customer_ban_title">封禁客户</h3>
+                    <p id="admin-customer-ban-msg"></p>
+                    <div class="admin-form-row">
+                        <label data-i18n="admin_bans_reason">封禁原因</label>
+                        <input type="text" id="admin-customer-ban-reason" data-i18n-placeholder="admin_bans_reason_placeholder" placeholder="请输入封禁原因">
+                    </div>
+                    <div class="admin-form-row">
+                        <label data-i18n="admin_bans_days">封禁天数</label>
+                        <input type="number" id="admin-customer-ban-days" min="1" max="3650" value="30">
+                    </div>
+                    <div class="admin-dialog-actions">
+                        <button type="button" class="btn-secondary" onclick="closeCustomerBanDialog()" data-i18n="admin_delete_cancel">取消</button>
+                        <button type="button" class="btn-danger" onclick="confirmCustomerBan()" data-i18n="admin_customer_ban_confirm">执行封禁</button>
+                    </div>
+                </div>
             </div>
 
             <!-- Delete Confirmation Dialog -->
@@ -957,8 +1031,8 @@
                     <h3 data-i18n="admin_delete_title">确认删除</h3>
                     <p id="admin-confirm-msg" data-i18n="admin_delete_default_msg">确定要删除该文档吗？此操作不可撤销。</p>
                     <div class="admin-dialog-actions">
-                        <button class="btn-secondary" onclick="closeAdminDialog()" data-i18n="admin_delete_cancel">取消</button>
-                        <button class="btn-danger" id="admin-confirm-btn" onclick="confirmAdminDelete()" data-i18n="admin_delete_confirm">删除</button>
+                        <button type="button" class="btn-secondary" onclick="closeAdminDialog()" data-i18n="admin_delete_cancel">取消</button>
+                        <button type="button" class="btn-danger" id="admin-confirm-btn" onclick="confirmAdminDelete()" data-i18n="admin_delete_confirm">删除</button>
                     </div>
                 </div>
             </div>
@@ -985,8 +1059,8 @@
                         <input type="text" id="admin-answer-url" placeholder="https://...">
                     </div>
                     <div class="admin-dialog-actions">
-                        <button class="btn-secondary" onclick="closeAnswerDialog()" data-i18n="admin_answer_cancel">取消</button>
-                        <button class="btn-primary" id="admin-answer-submit-btn" onclick="submitAdminAnswer()" data-i18n="admin_answer_submit">提交回答</button>
+                        <button type="button" class="btn-secondary" onclick="closeAnswerDialog()" data-i18n="admin_answer_cancel">取消</button>
+                        <button type="button" class="btn-primary" id="admin-answer-submit-btn" onclick="submitAdminAnswer()" data-i18n="admin_answer_submit">提交回答</button>
                     </div>
                 </div>
             </div>
@@ -995,7 +1069,7 @@
         </div>
     </div>
 
-    <script src="/app.js?v=20260212-4"></script>
+    <script src="/app.js?v=20260216-1"></script>
     <script>
         // Apply i18n translations on page load
         if (window.i18n) {

@@ -633,11 +633,26 @@ func getClientIP(r *http.Request) string {
 // Auth rate limiter: 10 attempts per minute per IP
 var authRateLimiter = newRateLimiter(10, 1*time.Minute)
 
+// API rate limiter: 60 requests per minute per IP (for non-auth endpoints like translate)
+var apiRateLimiter = newRateLimiter(60, 1*time.Minute)
+
 // rateLimit wraps a handler with per-IP rate limiting for auth endpoints.
 func rateLimit(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ip := getClientIP(r)
 		if !authRateLimiter.allow(ip) {
+			writeError(w, http.StatusTooManyRequests, "请求过于频繁，请稍后再试")
+			return
+		}
+		handler(w, r)
+	}
+}
+
+// apiRateLimit wraps a handler with a more relaxed per-IP rate limit for non-auth endpoints.
+func apiRateLimit(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ip := getClientIP(r)
+		if !apiRateLimiter.allow(ip) {
 			writeError(w, http.StatusTooManyRequests, "请求过于频繁，请稍后再试")
 			return
 		}
@@ -705,10 +720,13 @@ func registerAPIHandlers(app *App) {
 	// Public info
 	http.HandleFunc("/api/product-intro", secureAPI(handleProductIntro(app)))
 	http.HandleFunc("/api/app-info", secureAPI(handleAppInfo(app)))
-	http.HandleFunc("/api/translate-product-name", secureAPI(rateLimit(handleTranslateProductName(app))))
+	http.HandleFunc("/api/translate-product-name", secureAPI(apiRateLimit(handleTranslateProductName(app))))
 
 	// Query (rate limited to prevent abuse)
 	http.HandleFunc("/api/query", secureAPI(rateLimit(handleQuery(app))))
+
+	// User preferences (default product)
+	http.HandleFunc("/api/user/preferences", secureAPI(handleUserPreferences(app)))
 
 	// Documents
 	http.HandleFunc("/api/documents/upload", secureAPI(handleDocumentUpload(app)))
@@ -753,6 +771,13 @@ func registerAPIHandlers(app *App) {
 	http.HandleFunc("/api/admin/users", secureAPI(handleAdminUsers(app)))
 	http.HandleFunc("/api/admin/users/", secureAPI(handleAdminUserByID(app)))
 	http.HandleFunc("/api/admin/role", secureAPI(handleAdminRole(app)))
+
+	// Customer management
+	http.HandleFunc("/api/admin/customers", secureAPI(handleAdminCustomers(app)))
+	http.HandleFunc("/api/admin/customers/verify", secureAPI(handleAdminCustomerVerify(app)))
+	http.HandleFunc("/api/admin/customers/ban", secureAPI(handleAdminCustomerBan(app)))
+	http.HandleFunc("/api/admin/customers/unban", secureAPI(handleAdminCustomerUnban(app)))
+	http.HandleFunc("/api/admin/customers/delete", secureAPI(handleAdminCustomerDelete(app)))
 
 	// Login ban management
 	http.HandleFunc("/api/admin/bans", secureAPI(handleAdminBans(app)))
@@ -1053,6 +1078,41 @@ func handleRegister(app *App) http.HandlerFunc {
 	}
 }
 
+// handleUserPreferences handles GET/PUT for user default product preference.
+func handleUserPreferences(app *App) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, err := getUserSession(app, r)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			defaultProductID, err := app.GetUserDefaultProduct(userID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "获取用户偏好失败")
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"default_product_id": defaultProductID})
+		case http.MethodPut:
+			var req struct {
+				DefaultProductID string `json:"default_product_id"`
+			}
+			if err := readJSONBody(r, &req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
+			if err := app.SetUserDefaultProduct(userID, req.DefaultProductID); err != nil {
+				writeError(w, http.StatusInternalServerError, "保存用户偏好失败")
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	}
+}
+
 func handleUserLogin(app *App) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -1149,17 +1209,20 @@ func handleAppInfo(app *App) http.HandlerFunc {
 
 // handleTranslateProductName translates the product name to the requested language using LLM.
 func handleTranslateProductName(app *App) http.HandlerFunc {
+	// Simple in-memory cache for translated product names (avoids LLM call on every page load)
+	type cacheEntry struct {
+		text    string
+		expires time.Time
+	}
+	var cacheMu sync.Mutex
+	cache := make(map[string]cacheEntry)
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
-		// Require admin session to prevent LLM abuse
-		_, _, err := getAdminSession(app, r)
-		if err != nil {
-			writeError(w, http.StatusUnauthorized, err.Error())
-			return
-		}
+		// Rate limiting (via apiRateLimit wrapper) prevents LLM abuse
 		lang := r.URL.Query().Get("lang")
 		// Validate lang parameter to prevent injection
 		if len(lang) > 20 {
@@ -1176,12 +1239,42 @@ func handleTranslateProductName(app *App) http.HandlerFunc {
 			writeJSON(w, http.StatusOK, map[string]string{"product_name": name})
 			return
 		}
-		translated, err := app.queryEngine.TranslateText(name, lang)
-		if err != nil || translated == "" {
-			writeJSON(w, http.StatusOK, map[string]string{"product_name": name})
+
+		// Check cache first
+		cacheKey := name + "\x00" + lang
+		cacheMu.Lock()
+		if entry, ok := cache[cacheKey]; ok && time.Now().Before(entry.expires) {
+			cacheMu.Unlock()
+			writeJSON(w, http.StatusOK, map[string]string{"product_name": entry.text})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"product_name": translated})
+		cacheMu.Unlock()
+
+		// Use a timeout to prevent slow LLM calls from blocking the page load
+		type result struct {
+			text string
+			err  error
+		}
+		ch := make(chan result, 1)
+		go func() {
+			translated, err := app.queryEngine.TranslateText(name, lang)
+			ch <- result{translated, err}
+		}()
+		select {
+		case res := <-ch:
+			if res.err != nil || res.text == "" {
+				writeJSON(w, http.StatusOK, map[string]string{"product_name": name})
+				return
+			}
+			// Cache the result for 30 minutes
+			cacheMu.Lock()
+			cache[cacheKey] = cacheEntry{text: res.text, expires: time.Now().Add(30 * time.Minute)}
+			cacheMu.Unlock()
+			writeJSON(w, http.StatusOK, map[string]string{"product_name": res.text})
+		case <-time.After(10 * time.Second):
+			// LLM too slow, return original name
+			writeJSON(w, http.StatusOK, map[string]string{"product_name": name})
+		}
 	}
 }
 
@@ -1191,6 +1284,12 @@ func handleQuery(app *App) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		// Validate user session
+		_, err := getUserSession(app, r)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, err.Error())
 			return
 		}
 		var req query.QueryRequest
@@ -1209,6 +1308,13 @@ func handleQuery(app *App) http.HandlerFunc {
 			return
 		}
 		req.Question = question
+		// Default to first product if no product_id specified
+		if req.ProductID == "" {
+			products, pErr := app.ListProducts()
+			if pErr == nil && len(products) > 0 {
+				req.ProductID = products[0].ID
+			}
+		}
 		resp, err := app.queryEngine.Query(req)
 		if err != nil {
 			log.Printf("[Query] error: %v", err)
@@ -1506,6 +1612,12 @@ func handlePendingCreate(app *App) http.HandlerFunc {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
+		// Validate user session
+		_, err := getUserSession(app, r)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, err.Error())
+			return
+		}
 		var req struct {
 			Question  string `json:"question"`
 			UserID    string `json:"user_id"`
@@ -1720,6 +1832,20 @@ func handleMediaStream(app *App) http.HandlerFunc {
 }
 
 // --- Admin role check middleware helper ---
+
+// getUserSession validates the session for regular users.
+// Returns (userID, error).
+func getUserSession(app *App, r *http.Request) (string, error) {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if token == "" {
+		return "", fmt.Errorf("未登录")
+	}
+	session, err := app.sessionManager.ValidateSession(token)
+	if err != nil {
+		return "", fmt.Errorf("会话已过期")
+	}
+	return session.UserID, nil
+}
 
 // getAdminSession validates the session and checks if it's an admin session.
 // Returns (userID, role, error). role is "super_admin" or "editor".
@@ -2590,4 +2716,153 @@ func spaHandler(dir string) http.Handler {
 		// Fallback: serve index.html for SPA routing
 		http.ServeFile(w, r, indexPath)
 	})
+}
+
+// --- Customer management handlers ---
+
+func handleAdminCustomers(app *App) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		_, role, err := getAdminSession(app, r)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		if role != "super_admin" {
+			writeError(w, http.StatusForbidden, "insufficient permissions")
+			return
+		}
+
+		// Parse pagination and search params
+		page := 1
+		pageSize := 20
+		search := r.URL.Query().Get("search")
+		if p := r.URL.Query().Get("page"); p != "" {
+			if v, e := strconv.Atoi(p); e == nil && v > 0 {
+				page = v
+			}
+		}
+		if ps := r.URL.Query().Get("page_size"); ps != "" {
+			if v, e := strconv.Atoi(ps); e == nil && v > 0 {
+				pageSize = v
+			}
+		}
+
+		result, err := app.ListCustomersPaged(page, pageSize, search)
+		if err != nil {
+			log.Printf("[Admin] list customers error: %v", err)
+			writeError(w, http.StatusInternalServerError, "failed to list customers")
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	}
+}
+
+func handleAdminCustomerVerify(app *App) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		_, role, err := getAdminSession(app, r)
+		if err != nil || role != "super_admin" {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		var req struct {
+			UserID string `json:"user_id"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if err := app.VerifyCustomerEmail(req.UserID); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
+func handleAdminCustomerBan(app *App) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		_, role, err := getAdminSession(app, r)
+		if err != nil || role != "super_admin" {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		var req struct {
+			Email  string `json:"email"`
+			Reason string `json:"reason"`
+			Days   int    `json:"days"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if err := app.BanCustomer(req.Email, req.Reason, req.Days); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
+func handleAdminCustomerUnban(app *App) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		_, role, err := getAdminSession(app, r)
+		if err != nil || role != "super_admin" {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		var req struct {
+			Email string `json:"email"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if err := app.UnbanCustomer(req.Email); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
+func handleAdminCustomerDelete(app *App) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		_, role, err := getAdminSession(app, r)
+		if err != nil || role != "super_admin" {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		var req struct {
+			UserID string `json:"user_id"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if err := app.DeleteCustomer(req.UserID); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
 }

@@ -217,9 +217,14 @@ func (as *AppService) Shutdown(timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	// Stop session cleanup
+	// Stop session cleanup (only once)
 	if as.sessionCleanup != nil {
-		close(as.sessionCleanup)
+		select {
+		case <-as.sessionCleanup:
+			// Already closed
+		default:
+			close(as.sessionCleanup)
+		}
 	}
 
 	// Shutdown HTTP server
@@ -229,11 +234,12 @@ func (as *AppService) Shutdown(timeout time.Duration) error {
 		}
 	}
 
-	// Close database
+	// Close database (only once)
 	if as.database != nil {
 		if err := as.database.Close(); err != nil {
 			log.Printf("Database close error: %v", err)
 		}
+		as.database = nil
 	}
 
 	log.Println("Server stopped")
