@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -74,6 +75,11 @@ func NewOAuthClient(providers map[string]config.OAuthProviderConfig) *OAuthClien
 	}
 	// Background cleanup of expired states
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[OAuth] panic in state cleanup goroutine: %v", r)
+			}
+		}()
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {

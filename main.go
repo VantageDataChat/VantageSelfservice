@@ -547,6 +547,11 @@ func newRateLimiter(limit int, window time.Duration) *rateLimiter {
 	}
 	// Background cleanup of stale entries every 5 minutes
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[RateLimiter] panic in cleanup goroutine: %v", r)
+			}
+		}()
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {

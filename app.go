@@ -506,6 +506,11 @@ func (a *App) Register(req RegisterRequest, baseURL string) error {
 	// Send verification email asynchronously so registration returns immediately
 	verifyURL := strings.TrimRight(baseURL, "/") + "/verify?token=" + token
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[Register] panic sending verification email to %s: %v", email, r)
+			}
+		}()
 		if err := a.emailService.SendVerification(email, name, verifyURL); err != nil {
 			log.Printf("[Register] failed to send verification email to %s: %v", email, err)
 		}

@@ -135,12 +135,24 @@ func (dm *DocumentManager) UploadFile(req UploadFileRequest) (*DocumentInfo, err
 	// For video files, process asynchronously to avoid HTTP timeout
 	if videoFileTypes[fileType] {
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					dm.updateDocumentStatus(docID, "failed", fmt.Sprintf("panic: %v", r))
+					log.Printf("Video processing panic for %s: %v", docID, r)
+				}
+			}()
+
 			// Set a 30-minute timeout for video processing
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 			defer cancel()
 
 			done := make(chan error, 1)
 			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						done <- fmt.Errorf("panic in processVideo: %v", r)
+					}
+				}()
 				done <- dm.processVideo(docID, req.FileName, req.FileData, req.ProductID)
 			}()
 

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"helpdesk/internal/auth"
@@ -44,6 +45,7 @@ type AppService struct {
 	cfg             *config.Config
 	dataDir         string
 	sessionCleanup  chan struct{}
+	cleanupWg       sync.WaitGroup
 }
 
 // Initialize sets up all services and prepares the application for running.
@@ -163,6 +165,7 @@ func (as *AppService) Run(ctx context.Context) error {
 
 	// Start periodic session cleanup
 	as.sessionCleanup = make(chan struct{})
+	as.cleanupWg.Add(1)
 	go as.runSessionCleanup(ctx)
 
 	// Start server in a goroutine
@@ -192,6 +195,12 @@ func (as *AppService) Run(ctx context.Context) error {
 
 // runSessionCleanup runs periodic session cleanup in the background.
 func (as *AppService) runSessionCleanup(ctx context.Context) {
+	defer as.cleanupWg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[SessionCleanup] panic in cleanup goroutine: %v", r)
+		}
+	}()
 	// Create a single LoginLimiter instance for reuse across cleanup cycles
 	ll := auth.NewLoginLimiter(as.database)
 	ticker := time.NewTicker(1 * time.Hour)
@@ -226,6 +235,9 @@ func (as *AppService) Shutdown(timeout time.Duration) error {
 			close(as.sessionCleanup)
 		}
 	}
+
+	// Wait for cleanup goroutine to finish before closing database
+	as.cleanupWg.Wait()
 
 	// Shutdown HTTP server
 	if as.server != nil {
