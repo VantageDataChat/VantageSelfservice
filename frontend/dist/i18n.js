@@ -384,6 +384,11 @@
             'admin_users_products': '关联产品',
             'admin_users_products_hint': '选择该用户可管理的产品，不选则可管理所有产品',
             'admin_users_products_loading': '加载中...',
+            'admin_users_permissions': '功能权限',
+            'admin_users_permissions_hint': '选择该编辑员可使用的功能（超级管理员默认拥有全部权限）',
+            'admin_users_perm_batch_import': '批量导入',
+            'admin_users_th_permissions': '功能权限',
+            'admin_users_all_permissions': '全部',
 
             // Admin - login bans
             'admin_nav_bans': '登录限制',
@@ -900,6 +905,11 @@
             'admin_users_products': 'Assigned Products',
             'admin_users_products_hint': 'Select products this user can manage. Leave empty for access to all products.',
             'admin_users_products_loading': 'Loading...',
+            'admin_users_permissions': 'Permissions',
+            'admin_users_permissions_hint': 'Select features this editor can access (super admins have all permissions by default)',
+            'admin_users_perm_batch_import': 'Batch Import',
+            'admin_users_th_permissions': 'Permissions',
+            'admin_users_all_permissions': 'All',
 
             // Admin - login bans
             'admin_nav_bans': 'Login Bans',

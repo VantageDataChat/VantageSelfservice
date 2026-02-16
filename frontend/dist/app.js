@@ -1615,6 +1615,7 @@
     var adminAnswerTargetId = null;
     var adminToastTimer = null;
     var adminRole = '';  // 'super_admin' or 'editor'
+    var adminPermissions = []; // e.g. ['batch_import']
 
     function getAdminToken() {
         var session = getAdminSession();
@@ -1921,10 +1922,12 @@
             .then(function (res) { return res.json(); })
             .then(function (data) {
                 adminRole = data.role || '';
+                adminPermissions = data.permissions || [];
                 applyAdminRoleVisibility();
             })
             .catch(function () {
                 adminRole = localStorage.getItem('admin_role') || '';
+                adminPermissions = [];
                 applyAdminRoleVisibility();
             })
             .finally(function () {
@@ -1939,18 +1942,23 @@
         var productsNav = document.querySelector('.admin-nav-item[data-tab="products"]');
         var bansNav = document.querySelector('.admin-nav-item[data-tab="bans"]');
         var customersNav = document.querySelector('.admin-nav-item[data-tab="customers"]');
+        var batchimportNav = document.querySelector('.admin-nav-item[data-tab="batchimport"]');
         if (adminRole !== 'super_admin') {
             if (settingsNav) settingsNav.style.display = 'none';
             if (usersNav) usersNav.style.display = 'none';
             if (productsNav) productsNav.style.display = 'none';
             if (bansNav) bansNav.style.display = 'none';
             if (customersNav) customersNav.style.display = 'none';
+            // Batch import: only show if editor has batch_import permission
+            var hasBatchImport = adminPermissions.indexOf('batch_import') !== -1;
+            if (batchimportNav) batchimportNav.style.display = hasBatchImport ? '' : 'none';
         } else {
             if (settingsNav) settingsNav.style.display = '';
             if (usersNav) usersNav.style.display = '';
             if (productsNav) productsNav.style.display = '';
             if (bansNav) bansNav.style.display = '';
             if (customersNav) customersNav.style.display = '';
+            if (batchimportNav) batchimportNav.style.display = '';
         }
     }
 
@@ -3830,19 +3838,29 @@
         if (!tbody) return;
 
         if (!users || users.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="admin-table-empty">' + i18n.t('admin_users_empty') + '</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" class="admin-table-empty">' + i18n.t('admin_users_empty') + '</td></tr>';
             return;
         }
 
         var roleMap = { 'editor': i18n.t('admin_users_role_editor_short'), 'super_admin': i18n.t('admin_users_role_super_short') };
+        var permMap = { 'batch_import': i18n.t('admin_users_perm_batch_import') || '批量导入' };
         var html = '';
         for (var i = 0; i < users.length; i++) {
             var u = users[i];
             var productNames = (u.product_names && u.product_names.length > 0) ? u.product_names.map(escapeHtml).join(', ') : i18n.t('admin_users_all_products');
+            var permNames = '';
+            if (u.role === 'super_admin') {
+                permNames = i18n.t('admin_users_all_permissions') || '全部';
+            } else if (u.permissions && u.permissions.length > 0) {
+                permNames = u.permissions.map(function(p) { return escapeHtml(permMap[p] || p); }).join(', ');
+            } else {
+                permNames = '-';
+            }
             html += '<tr>' +
                 '<td>' + escapeHtml(u.username) + '</td>' +
                 '<td>' + escapeHtml(roleMap[u.role] || u.role) + '</td>' +
                 '<td>' + productNames + '</td>' +
+                '<td>' + permNames + '</td>' +
                 '<td>' + escapeHtml(u.created_at || '-') + '</td>' +
                 '<td><button class="btn-danger btn-sm" onclick="deleteAdminUser(\'' + escapeHtml(u.id) + '\', \'' + escapeHtml(u.username) + '\')">' + i18n.t('admin_users_delete_btn') + '</button></td>' +
             '</tr>';
@@ -3856,6 +3874,12 @@
         var role = (document.getElementById('admin-new-role') || {}).value || 'editor';
         var productIDs = getSelectedProductIDs();
 
+        var permissions = [];
+        var batchImportCb = document.getElementById('admin-new-perm-batch-import');
+        if (batchImportCb && batchImportCb.checked) {
+            permissions.push('batch_import');
+        }
+
         if (!username.trim() || !password) {
             showAdminToast(i18n.t('admin_users_create_empty'), 'error');
             return;
@@ -3868,7 +3892,7 @@
         adminFetch('/api/admin/users', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: username.trim(), password: password, role: role, product_ids: productIDs })
+            body: JSON.stringify({ username: username.trim(), password: password, role: role, product_ids: productIDs, permissions: permissions })
         })
         .then(function (res) {
             if (!res.ok) return res.json().then(function (d) { throw new Error(d.error || i18n.t('admin_users_create_failed')); });
@@ -3878,6 +3902,8 @@
             showAdminToast(i18n.t('admin_users_created'), 'success');
             if (document.getElementById('admin-new-username')) document.getElementById('admin-new-username').value = '';
             if (document.getElementById('admin-new-password')) document.getElementById('admin-new-password').value = '';
+            var batchCb = document.getElementById('admin-new-perm-batch-import');
+            if (batchCb) batchCb.checked = false;
             loadAdminUsers();
         })
         .catch(function (err) {
@@ -4016,6 +4042,7 @@
 
     window.adminLogout = function () {
         adminRole = '';
+        adminPermissions = [];
         localStorage.removeItem('admin_role');
         clearAdminSession();
         navigate(adminLoginRoute);

@@ -304,6 +304,7 @@ func migrateTables(db *sql.DB) error {
 		{"documents", "product_id", "ALTER TABLE documents ADD COLUMN product_id TEXT DEFAULT ''"},
 		{"chunks", "product_id", "ALTER TABLE chunks ADD COLUMN product_id TEXT DEFAULT ''"},
 		{"pending_questions", "product_id", "ALTER TABLE pending_questions ADD COLUMN product_id TEXT DEFAULT ''"},
+		{"admin_users", "permissions", "ALTER TABLE admin_users ADD COLUMN permissions TEXT DEFAULT ''"},
 	}
 
 	for _, m := range migrations {

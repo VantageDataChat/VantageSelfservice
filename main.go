@@ -1671,11 +1671,25 @@ func handleBatchImport(app *App) http.HandlerFunc {
 			return
 		}
 
-		// Require admin session
-		_, _, err := getAdminSession(app, r)
+		// Require admin session with batch_import permission
+		userID, role, err := getAdminSession(app, r)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, err.Error())
 			return
+		}
+		if role != "super_admin" {
+			perms := app.GetAdminPermissions(userID)
+			hasPerm := false
+			for _, p := range perms {
+				if p == "batch_import" {
+					hasPerm = true
+					break
+				}
+			}
+			if !hasPerm {
+				writeError(w, http.StatusForbidden, "无批量导入权限")
+				return
+			}
 		}
 
 		var req struct {
@@ -2187,16 +2201,17 @@ func handleAdminUsers(app *App) http.HandlerFunc {
 				return
 			}
 			var req struct {
-				Username   string   `json:"username"`
-				Password   string   `json:"password"`
-				Role       string   `json:"role"`
-				ProductIDs []string `json:"product_ids"`
+				Username    string   `json:"username"`
+				Password    string   `json:"password"`
+				Role        string   `json:"role"`
+				ProductIDs  []string `json:"product_ids"`
+				Permissions []string `json:"permissions"`
 			}
 			if err := readJSONBody(r, &req); err != nil {
 				writeError(w, http.StatusBadRequest, "invalid request body")
 				return
 			}
-			user, err := app.CreateAdminUser(req.Username, req.Password, req.Role)
+			user, err := app.CreateAdminUser(req.Username, req.Password, req.Role, req.Permissions)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
@@ -2259,12 +2274,16 @@ func handleAdminRole(app *App) http.HandlerFunc {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
-		_, role, err := getAdminSession(app, r)
+		userID, role, err := getAdminSession(app, r)
 		if err != nil {
-			writeJSON(w, http.StatusOK, map[string]string{"role": ""})
+			writeJSON(w, http.StatusOK, map[string]interface{}{"role": "", "permissions": []string{}})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"role": role})
+		perms := app.GetAdminPermissions(userID)
+		if perms == nil {
+			perms = []string{}
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"role": role, "permissions": perms})
 	}
 }
 

@@ -231,6 +231,7 @@ type AdminUserInfo struct {
 	Role         string   `json:"role"`
 	CreatedAt    string   `json:"created_at,omitempty"`
 	ProductNames []string `json:"product_names,omitempty"`
+	Permissions  []string `json:"permissions,omitempty"`
 }
 
 // IsAdminConfigured returns whether the admin account has been set up.
@@ -324,6 +325,31 @@ func (a *App) GetAdminRole(userID string) string {
 	}
 	return ""
 }
+
+// GetAdminPermissions returns the permissions list for an admin user.
+// super_admin has all permissions implicitly.
+func (a *App) GetAdminPermissions(userID string) []string {
+	if userID == "admin" {
+		return []string{"batch_import"}
+	}
+	if strings.HasPrefix(userID, "admin_") {
+		subID := strings.TrimPrefix(userID, "admin_")
+		var role, permsStr string
+		err := a.db.QueryRow(`SELECT role, COALESCE(permissions,'') FROM admin_users WHERE id = ?`, subID).Scan(&role, &permsStr)
+		if err != nil {
+			return nil
+		}
+		if role == "super_admin" {
+			return []string{"batch_import"}
+		}
+		if permsStr == "" {
+			return nil
+		}
+		return strings.Split(permsStr, ",")
+	}
+	return nil
+}
+
 
 // IsAdminSession checks if a user ID belongs to any admin (super or sub).
 func (a *App) IsAdminSession(userID string) bool {
@@ -858,7 +884,7 @@ func maskSecret(s string) string {
 // --- Admin Sub-Account Management ---
 
 // CreateAdminUser creates a new admin sub-account.
-func (a *App) CreateAdminUser(username, password, role string) (*AdminUserInfo, error) {
+func (a *App) CreateAdminUser(username, password, role string, permissions []string) (*AdminUserInfo, error) {
 	username = strings.TrimSpace(username)
 	if username == "" || password == "" {
 		return nil, fmt.Errorf("用户名和密码不能为空")
@@ -915,9 +941,19 @@ func (a *App) CreateAdminUser(username, password, role string) (*AdminUserInfo, 
 		return nil, err
 	}
 
+	// Filter valid permissions
+	validPerms := map[string]bool{"batch_import": true}
+	var filteredPerms []string
+	for _, p := range permissions {
+		if validPerms[p] {
+			filteredPerms = append(filteredPerms, p)
+		}
+	}
+	permsStr := strings.Join(filteredPerms, ",")
+
 	_, err = a.db.Exec(
-		`INSERT INTO admin_users (id, username, password_hash, role) VALUES (?, ?, ?, ?)`,
-		id, username, hash, role,
+		`INSERT INTO admin_users (id, username, password_hash, role, permissions) VALUES (?, ?, ?, ?, ?)`,
+		id, username, hash, role, permsStr,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
@@ -926,12 +962,12 @@ func (a *App) CreateAdminUser(username, password, role string) (*AdminUserInfo, 
 		return nil, fmt.Errorf("创建用户失败: %w", err)
 	}
 
-	return &AdminUserInfo{ID: id, Username: username, Role: role}, nil
+	return &AdminUserInfo{ID: id, Username: username, Role: role, Permissions: filteredPerms}, nil
 }
 
 // ListAdminUsers returns all admin sub-accounts.
 func (a *App) ListAdminUsers() ([]AdminUserInfo, error) {
-	rows, err := a.db.Query(`SELECT id, username, role, created_at FROM admin_users ORDER BY created_at DESC`)
+	rows, err := a.db.Query(`SELECT id, username, role, created_at, COALESCE(permissions,'') FROM admin_users ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -941,11 +977,15 @@ func (a *App) ListAdminUsers() ([]AdminUserInfo, error) {
 	for rows.Next() {
 		var u AdminUserInfo
 		var createdAt sql.NullTime
-		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &createdAt); err != nil {
+		var permsStr string
+		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &createdAt, &permsStr); err != nil {
 			return nil, err
 		}
 		if createdAt.Valid {
 			u.CreatedAt = createdAt.Time.Format("2006-01-02 15:04:05")
+		}
+		if permsStr != "" {
+			u.Permissions = strings.Split(permsStr, ",")
 		}
 		users = append(users, u)
 	}

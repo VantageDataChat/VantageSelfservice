@@ -175,7 +175,7 @@ func DefaultConfig() *Config {
 			UseMultimodal: true,
 		},
 		Vector: VectorConfig{
-			DBPath:           "./data/helpdesk.db",
+			DBPath:           "helpdesk.db",
 			ChunkSize:        512,
 			Overlap:          128,
 			TopK:             5,

@@ -929,6 +929,16 @@
                                         </div>
                                         <span class="admin-form-hint" data-i18n="admin_users_products_hint">选择该用户可管理的产品，不选则可管理所有产品</span>
                                     </div>
+                                    <div class="admin-form-row">
+                                        <label data-i18n="admin_users_permissions">功能权限</label>
+                                        <div class="admin-checkbox-group">
+                                            <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;">
+                                                <input type="checkbox" id="admin-new-perm-batch-import" value="batch_import">
+                                                <span data-i18n="admin_users_perm_batch_import">批量导入</span>
+                                            </label>
+                                        </div>
+                                        <span class="admin-form-hint" data-i18n="admin_users_permissions_hint">选择该编辑员可使用的功能（超级管理员默认拥有全部权限）</span>
+                                    </div>
                                     <div class="admin-form-actions">
                                         <button type="button" class="btn-primary" onclick="createAdminUser()" data-i18n="admin_users_add_btn">添加用户</button>
                                     </div>
@@ -942,12 +952,13 @@
                                                     <th data-i18n="admin_users_th_username">用户名</th>
                                                     <th data-i18n="admin_users_th_role">角色</th>
                                                     <th data-i18n="admin_users_th_products">关联产品</th>
+                                                    <th data-i18n="admin_users_th_permissions">功能权限</th>
                                                     <th data-i18n="admin_users_th_time">创建时间</th>
                                                     <th data-i18n="admin_users_th_action">操作</th>
                                                 </tr>
                                             </thead>
                                             <tbody id="admin-users-tbody">
-                                                <tr><td colspan="5" class="admin-table-empty" data-i18n="admin_users_empty">暂无子账号</td></tr>
+                                                <tr><td colspan="6" class="admin-table-empty" data-i18n="admin_users_empty">暂无子账号</td></tr>
                                             </tbody>
                                         </table>
                                     </div>
