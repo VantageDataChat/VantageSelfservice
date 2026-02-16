@@ -1,4 +1,4 @@
-; Helpdesk Windows Installer Script
+; Askflow Windows Installer Script
 ; Requires NSIS 3.0 or later
 
 !include "MUI2.nsh"
@@ -6,9 +6,9 @@
 !include "LogicLib.nsh"
 
 ; General Information
-Name "Helpdesk"
-OutFile "helpdesk-installer.exe"
-InstallDir "$PROGRAMFILES\Helpdesk"
+Name "Askflow"
+OutFile "askflow-installer.exe"
+InstallDir "$PROGRAMFILES\Askflow"
 RequestExecutionLevel admin
 
 ; Variables
@@ -40,7 +40,7 @@ Function .onInit
 FunctionEnd
 
 Function DataDirPage
-    !insertmacro MUI_HEADER_TEXT "Choose Data Directory" "Select where Helpdesk will store its data"
+    !insertmacro MUI_HEADER_TEXT "Choose Data Directory" "Select where Askflow will store its data"
 
     nsDialogs::Create 1018
     Pop $0
@@ -81,14 +81,14 @@ Section "Install"
 
     ; Stop and remove existing service if present
     DetailPrint "Stopping existing service..."
-    nsExec::ExecToLog '"$INSTDIR\helpdesk.exe" stop'
+    nsExec::ExecToLog '"$INSTDIR\askflow.exe" stop'
     Sleep 2000
-    nsExec::ExecToLog '"$INSTDIR\helpdesk.exe" remove'
+    nsExec::ExecToLog '"$INSTDIR\askflow.exe" remove'
     Sleep 2000
 
     ; Copy executable
-    DetailPrint "Installing Helpdesk..."
-    File "..\dist\helpdesk.exe"
+    DetailPrint "Installing Askflow..."
+    File "..\dist\askflow.exe"
 
     ; Copy frontend files
     DetailPrint "Installing frontend files..."
@@ -100,13 +100,13 @@ Section "Install"
     CreateDirectory "$DataDir\logs"
 
     ; Write data directory path to registry
-    WriteRegStr HKLM "Software\Helpdesk" "DataDir" "$DataDir"
-    WriteRegStr HKLM "Software\Helpdesk" "InstallDir" "$INSTDIR"
+    WriteRegStr HKLM "Software\Askflow" "DataDir" "$DataDir"
+    WriteRegStr HKLM "Software\Askflow" "InstallDir" "$INSTDIR"
 
     ; Install and start service
     SetOutPath "$INSTDIR"
     DetailPrint "Installing Windows service..."
-    nsExec::ExecToLog '"$INSTDIR\helpdesk.exe" install --datadir="$DataDir"'
+    nsExec::ExecToLog '"$INSTDIR\askflow.exe" install --datadir="$DataDir"'
     Pop $0
     ${If} $0 != 0
         DetailPrint "Warning: Service installation returned error code $0"
@@ -114,7 +114,7 @@ Section "Install"
 
     DetailPrint "Starting service..."
     Sleep 1000
-    nsExec::ExecToLog '"$INSTDIR\helpdesk.exe" start'
+    nsExec::ExecToLog '"$INSTDIR\askflow.exe" start'
     Pop $0
     ${If} $0 != 0
         DetailPrint "Warning: Service start returned error code $0"
@@ -124,45 +124,45 @@ Section "Install"
     WriteUninstaller "$INSTDIR\Uninstall.exe"
 
     ; Write uninstall registry keys
-    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helpdesk" \
-                     "DisplayName" "Helpdesk Support Service"
-    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helpdesk" \
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Askflow" \
+                     "DisplayName" "Askflow Support Service"
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Askflow" \
                      "UninstallString" "$INSTDIR\Uninstall.exe"
-    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helpdesk" \
-                     "DisplayIcon" "$INSTDIR\helpdesk.exe"
-    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helpdesk" \
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Askflow" \
+                     "DisplayIcon" "$INSTDIR\askflow.exe"
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Askflow" \
                      "Publisher" "Vantage"
-    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helpdesk" \
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Askflow" \
                      "DisplayVersion" "1.0.0"
-    WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helpdesk" \
+    WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Askflow" \
                      "NoModify" 1
-    WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helpdesk" \
+    WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Askflow" \
                      "NoRepair" 1
 
     ; Calculate and write installed size
     ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
     IntFmt $0 "0x%08X" $0
-    WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helpdesk" \
+    WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Askflow" \
                        "EstimatedSize" "$0"
 
-    MessageBox MB_ICONINFORMATION "Installation complete!$\r$\n$\r$\nHelpdesk service has been installed and started.$\r$\n$\r$\nAccess the web interface at: http://localhost:8080$\r$\nData directory: $DataDir"
+    MessageBox MB_ICONINFORMATION "Installation complete!$\r$\n$\r$\nAskflow service has been installed and started.$\r$\n$\r$\nAccess the web interface at: http://localhost:8080$\r$\nData directory: $DataDir"
 SectionEnd
 
 ; Uninstallation Section
 Section "Uninstall"
     ; Stop and remove service
     DetailPrint "Stopping service..."
-    nsExec::ExecToLog '"$INSTDIR\helpdesk.exe" stop'
+    nsExec::ExecToLog '"$INSTDIR\askflow.exe" stop'
     Sleep 2000
     DetailPrint "Removing service..."
-    nsExec::ExecToLog '"$INSTDIR\helpdesk.exe" remove'
+    nsExec::ExecToLog '"$INSTDIR\askflow.exe" remove'
     Sleep 2000
 
     ; Read data directory from registry
-    ReadRegStr $DataDir HKLM "Software\Helpdesk" "DataDir"
+    ReadRegStr $DataDir HKLM "Software\Askflow" "DataDir"
 
     ; Delete program files
-    Delete "$INSTDIR\helpdesk.exe"
+    Delete "$INSTDIR\askflow.exe"
     Delete "$INSTDIR\Uninstall.exe"
     RMDir /r "$INSTDIR\frontend"
     RMDir "$INSTDIR"
@@ -185,8 +185,8 @@ Section "Uninstall"
     ${EndIf}
 
     ; Delete registry keys
-    DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helpdesk"
-    DeleteRegKey HKLM "Software\Helpdesk"
+    DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Askflow"
+    DeleteRegKey HKLM "Software\Askflow"
 
-    MessageBox MB_ICONINFORMATION "Helpdesk has been uninstalled successfully."
+    MessageBox MB_ICONINFORMATION "Askflow has been uninstalled successfully."
 SectionEnd
