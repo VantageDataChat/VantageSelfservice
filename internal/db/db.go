@@ -38,11 +38,6 @@ func InitDB(dbPath string) (*sql.DB, error) {
 		return nil, err
 	}
 
-	if err := migrateTables(db); err != nil {
-		db.Close()
-		return nil, err
-	}
-
 	if err := createAdminUsersTable(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to create admin_users table: %w", err)
@@ -51,6 +46,11 @@ func InitDB(dbPath string) (*sql.DB, error) {
 	if err := createProductTables(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to create product tables: %w", err)
+	}
+
+	if err := migrateTables(db); err != nil {
+		db.Close()
+		return nil, err
 	}
 
 	if err := migrateProductTables(db); err != nil {
