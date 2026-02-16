@@ -314,6 +314,11 @@
             'admin_settings_load_failed': '加载配置失败',
             'admin_settings_not_set': '未设置',
 
+            // Admin - auth server
+            'admin_settings_auth_server': '认证服务器',
+            'admin_settings_auth_server_label': '认证服务器地址',
+            'admin_settings_auth_server_hint': 'License 认证服务器主机名，用于 SN 登录验证（如 license.vantagedata.chat）',
+
             // Admin - OAuth settings
             'admin_settings_oauth': 'OAuth 登录设置',
             'admin_settings_oauth_hint': '配置第三方OAuth登录，设置完成后用户可在登录页看到对应的登录按钮',
@@ -834,6 +839,11 @@
             'admin_settings_save_failed': 'Save failed',
             'admin_settings_load_failed': 'Failed to load settings',
             'admin_settings_not_set': 'Not set',
+
+            // Admin - auth server
+            'admin_settings_auth_server': 'Auth Server',
+            'admin_settings_auth_server_label': 'Auth Server Address',
+            'admin_settings_auth_server_hint': 'License auth server hostname for SN login verification (e.g. license.vantagedata.chat)',
 
             // Admin - OAuth settings
             'admin_settings_oauth': 'OAuth Login Settings',
