@@ -2683,7 +2683,7 @@
                 var tlsSelect = document.getElementById('cfg-smtp-tls');
                 if (tlsSelect) tlsSelect.value = smtp.use_tls === false ? 'false' : 'true';
                 var authMethodSelect = document.getElementById('cfg-smtp-auth-method');
-                if (authMethodSelect) authMethodSelect.value = smtp.auth_method || 'PLAIN';
+                if (authMethodSelect) authMethodSelect.value = smtp.auth_method || '';
 
                 // Load OAuth providers
                 renderOAuthProviderSettings(cfg.oauth || {});
@@ -2930,7 +2930,7 @@
         if (smtpFromAddr) updates['smtp.from_addr'] = smtpFromAddr;
         if (smtpFromName) updates['smtp.from_name'] = smtpFromName;
         updates['smtp.use_tls'] = smtpTls === 'true';
-        updates['smtp.auth_method'] = smtpAuthMethod || 'PLAIN';
+        updates['smtp.auth_method'] = smtpAuthMethod || '';
 
         // Collect OAuth provider settings
         var oauthCards = document.querySelectorAll('.oauth-provider-card');

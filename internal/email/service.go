@@ -206,16 +206,59 @@ func (s *Service) send(cfg config.SMTPConfig, from, to string, msg []byte) error
 	case "NONE", "NOAUTH":
 		// Skip authentication entirely (for relay servers)
 		auth = nil
-	default:
-		// Default to PLAIN with our unrestricted implementation
-		// that works correctly on implicit TLS (port 465) connections
+	case "PLAIN":
 		auth = newUnrestrictedPlainAuth("", cfg.Username, cfg.Password, cfg.Host)
+	default:
+		// Auto mode: try PLAIN first, fall back to LOGIN on failure
+		plainAuth := newUnrestrictedPlainAuth("", cfg.Username, cfg.Password, cfg.Host)
+		if err := client.Auth(plainAuth); err != nil {
+			// PLAIN failed, reconnect and try LOGIN
+			client.Close()
+			conn.Close()
+
+			// Re-establish connection
+			if cfg.Port == 465 {
+				dialer := &net.Dialer{Timeout: 15 * time.Second}
+				tlsConfig := &tls.Config{ServerName: cfg.Host}
+				conn, err = tls.DialWithDialer(dialer, "tcp", addr, tlsConfig)
+			} else {
+				conn, err = net.DialTimeout("tcp", addr, 15*time.Second)
+			}
+			if err != nil {
+				return fmt.Errorf("重连邮件服务器失败: %w", err)
+			}
+			conn.SetDeadline(time.Now().Add(30 * time.Second))
+			defer conn.Close()
+
+			client, err = smtp.NewClient(conn, cfg.Host)
+			if err != nil {
+				return fmt.Errorf("重建SMTP客户端失败: %w", err)
+			}
+			defer client.Close()
+
+			if cfg.Port != 465 {
+				if ok, _ := client.Extension("STARTTLS"); ok {
+					tlsConfig := &tls.Config{ServerName: cfg.Host}
+					if err := client.StartTLS(tlsConfig); err != nil {
+						return fmt.Errorf("STARTTLS失败: %w", err)
+					}
+				}
+			}
+
+			loginAuth := newLoginAuth(cfg.Username, cfg.Password)
+			if err := client.Auth(loginAuth); err != nil {
+				return fmt.Errorf("邮件认证失败 (PLAIN和LOGIN均失败): %w", err)
+			}
+		}
+		// Auth succeeded in auto mode, skip the auth block below
+		goto sendMail
 	}
 	if auth != nil {
 		if err := client.Auth(auth); err != nil {
 			return fmt.Errorf("邮件认证失败 (auth=%s): %w", method, err)
 		}
 	}
+sendMail:
 	if err := client.Mail(from); err != nil {
 		return fmt.Errorf("发送邮件失败: %w", err)
 	}
