@@ -1698,6 +1698,52 @@
         if (tab === 'batchimport') { loadBatchImportProductSelector(); }
     };
 
+    // --- Settings Sub-Tab Switching ---
+    window.switchSettingsSubTab = function (tabId) {
+        var container = document.getElementById('admin-tab-settings');
+        if (!container) return;
+        // Update tab buttons
+        var btns = container.querySelectorAll('.settings-tab-btn');
+        btns.forEach(function (btn) {
+            btn.classList.toggle('active', btn.getAttribute('data-settings-tab') === tabId);
+        });
+        // Update panels
+        var panels = container.querySelectorAll('.settings-panel');
+        panels.forEach(function (p) {
+            p.classList.add('hidden');
+            p.classList.remove('settings-panel-animated');
+        });
+        var target = document.getElementById('settings-panel-' + tabId);
+        if (target) {
+            target.classList.remove('hidden');
+            target.classList.add('settings-panel-animated');
+        }
+    };
+
+    // --- SMTP Presets ---
+    var smtpPresets = {
+        qq:      { host: 'smtp.qq.com',             port: 465, tls: 'true',  auth: 'LOGIN' },
+        '163':   { host: 'smtp.163.com',            port: 465, tls: 'true',  auth: 'LOGIN' },
+        gmail:   { host: 'smtp.gmail.com',          port: 587, tls: 'true',  auth: 'PLAIN' },
+        outlook: { host: 'smtp.office365.com',      port: 587, tls: 'true',  auth: 'PLAIN' },
+        aliyun:  { host: 'smtp.qiye.aliyun.com',    port: 465, tls: 'true',  auth: 'LOGIN' },
+        exmail:  { host: 'smtp.exmail.qq.com',      port: 465, tls: 'true',  auth: 'LOGIN' }
+    };
+
+    window.applySmtpPreset = function (provider) {
+        var p = smtpPresets[provider];
+        if (!p) return;
+        var hostEl = document.getElementById('cfg-smtp-host');
+        var portEl = document.getElementById('cfg-smtp-port');
+        var tlsEl  = document.getElementById('cfg-smtp-tls');
+        var authEl = document.getElementById('cfg-smtp-auth-method');
+        if (hostEl) hostEl.value = p.host;
+        if (portEl) portEl.value = p.port;
+        if (tlsEl)  tlsEl.value  = p.tls;
+        if (authEl) authEl.value = p.auth;
+        showAdminToast(i18n.t('admin_settings_smtp_preset_applied', { provider: provider.toUpperCase() }), 'success');
+    };
+
     // --- Customer Management ---
 
     var pendingBanEmail = '';
@@ -3103,6 +3149,172 @@
         } else {
             doSave();
         }
+    };
+
+    // --- Auto Setup for Multimodal Dependencies ---
+
+    var autoSetupRunning = false;
+    var autoSetupAbort = null;
+
+    window.startAutoSetup = function () {
+        var modal = document.getElementById('auto-setup-modal');
+        if (modal) {
+            modal.classList.remove('hidden');
+            var log = document.getElementById('auto-setup-log');
+            if (log) log.innerHTML = '';
+            var fill = document.getElementById('auto-setup-progress-fill');
+            if (fill) fill.style.width = '0%';
+            var text = document.getElementById('auto-setup-progress-text');
+            if (text) text.textContent = '0%';
+            var status = document.getElementById('auto-setup-status');
+            if (status) {
+                status.textContent = i18n.t('admin_multimodal_auto_setup_ready');
+                status.className = 'auto-setup-status';
+            }
+            var startBtn = document.getElementById('auto-setup-start-btn');
+            if (startBtn) { startBtn.disabled = false; startBtn.classList.remove('hidden'); }
+            var closeBtn = document.getElementById('auto-setup-close-btn');
+            if (closeBtn) closeBtn.disabled = false;
+        }
+    };
+
+    window.closeAutoSetup = function () {
+        if (autoSetupRunning) {
+            if (!confirm(i18n.t('admin_multimodal_auto_setup_cancel_confirm'))) return;
+            if (autoSetupAbort) { autoSetupAbort.abort(); autoSetupAbort = null; }
+            autoSetupRunning = false;
+        }
+        var modal = document.getElementById('auto-setup-modal');
+        if (modal) modal.classList.add('hidden');
+        checkMultimodalDeps();
+        loadMultimodalSettings();
+    };
+
+    window.confirmAutoSetup = function () {
+        if (autoSetupRunning) return;
+        autoSetupRunning = true;
+        autoSetupAbort = new AbortController();
+
+        var startBtn = document.getElementById('auto-setup-start-btn');
+        if (startBtn) startBtn.classList.add('hidden');
+        var closeBtn = document.getElementById('auto-setup-close-btn');
+        if (closeBtn) closeBtn.disabled = true;
+
+        var log = document.getElementById('auto-setup-log');
+        var fill = document.getElementById('auto-setup-progress-fill');
+        var text = document.getElementById('auto-setup-progress-text');
+        var status = document.getElementById('auto-setup-status');
+
+        // Batch DOM writes via requestAnimationFrame to avoid layout thrashing
+        var pendingLogs = [];
+        var logFlushScheduled = false;
+        function flushLogs() {
+            logFlushScheduled = false;
+            if (!log || pendingLogs.length === 0) return;
+            var frag = document.createDocumentFragment();
+            for (var j = 0; j < pendingLogs.length; j++) {
+                var item = pendingLogs[j];
+                var div = document.createElement('div');
+                if (item.cls) div.className = item.cls;
+                div.textContent = item.msg;
+                frag.appendChild(div);
+            }
+            pendingLogs = [];
+            log.appendChild(frag);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        function appendLog(msg, cls) {
+            pendingLogs.push({ msg: msg, cls: cls || '' });
+            if (!logFlushScheduled) {
+                logFlushScheduled = true;
+                requestAnimationFrame(flushLogs);
+            }
+        }
+
+        function setProgress(pct) {
+            if (pct < 0) return;
+            if (fill) fill.style.width = pct + '%';
+            if (text) text.textContent = pct + '%';
+        }
+
+        if (status) {
+            status.textContent = i18n.t('admin_multimodal_auto_setup_running');
+            status.className = 'auto-setup-status';
+        }
+
+        fetch('/api/video/auto-setup', {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + getAdminToken() },
+            signal: autoSetupAbort.signal
+        }).then(function (response) {
+            if (!response.ok) {
+                return response.json().then(function (data) {
+                    throw new Error(data.error || 'Auto-setup failed');
+                });
+            }
+            var reader = response.body.getReader();
+            var decoder = new TextDecoder();
+            var buffer = '';
+
+            function processChunk() {
+                return reader.read().then(function (result) {
+                    if (result.done) {
+                        flushLogs();
+                        autoSetupRunning = false;
+                        if (closeBtn) closeBtn.disabled = false;
+                        return;
+                    }
+                    buffer += decoder.decode(result.value, { stream: true });
+                    var lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (var i = 0; i < lines.length; i++) {
+                        var line = lines[i].trim();
+                        if (line.indexOf('data: ') !== 0) continue;
+                        try {
+                            var evt = JSON.parse(line.substring(6));
+                            if (evt.progress >= 0) setProgress(evt.progress);
+
+                            if (evt.type === 'step') {
+                                appendLog(evt.message, 'log-step');
+                                if (status) { status.textContent = evt.message; status.className = 'auto-setup-status'; }
+                            } else if (evt.type === 'error') {
+                                appendLog('❌ ' + evt.message, 'log-error');
+                                if (status) { status.textContent = evt.message; status.className = 'auto-setup-status error'; }
+                            } else if (evt.type === 'done') {
+                                flushLogs();
+                                var isSuccess = evt.progress === 100;
+                                if (isSuccess) {
+                                    appendLog('✅ ' + evt.message, 'log-success');
+                                    if (status) { status.textContent = evt.message; status.className = 'auto-setup-status success'; }
+                                } else {
+                                    if (status) { status.className = 'auto-setup-status error'; }
+                                }
+                                autoSetupRunning = false;
+                                if (closeBtn) closeBtn.disabled = false;
+                                if (isSuccess) { checkMultimodalDeps(); loadMultimodalSettings(); }
+                            } else if (evt.type === 'log') {
+                                appendLog(evt.message, '');
+                            }
+                        } catch (e) { /* ignore parse errors */ }
+                    }
+                    return processChunk();
+                });
+            }
+            return processChunk();
+        }).catch(function (err) {
+            flushLogs();
+            if (err.name === 'AbortError') {
+                appendLog('⚠️ ' + (i18n.t('admin_multimodal_auto_setup_aborted') || '安装已取消'), 'log-error');
+                if (status) { status.textContent = i18n.t('admin_multimodal_auto_setup_aborted') || '安装已取消'; status.className = 'auto-setup-status error'; }
+            } else {
+                appendLog('❌ ' + (err.message || 'Connection failed'), 'log-error');
+                if (status) { status.textContent = err.message || 'Failed'; status.className = 'auto-setup-status error'; }
+            }
+            autoSetupRunning = false;
+            if (closeBtn) closeBtn.disabled = false;
+        });
     };
 
     // --- OAuth Admin Settings ---

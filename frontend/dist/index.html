@@ -378,7 +378,37 @@
                             <h2 data-i18n="admin_settings_title">系统设置</h2>
                         </div>
                         <div class="admin-tab-body">
-                            <div id="admin-settings-form" class="admin-settings-form">
+                            <!-- Settings Sub-Tabs -->
+                            <div class="settings-tabs">
+                                <button class="settings-tab-btn active" data-settings-tab="settings-basic" onclick="switchSettingsSubTab('settings-basic')">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/></svg>
+                                    <span data-i18n="admin_settings_tab_basic">基础设置</span>
+                                </button>
+                                <button class="settings-tab-btn" data-settings-tab="settings-llm" onclick="switchSettingsSubTab('settings-llm')">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2z"/><path d="M12 6v6l4 2"/></svg>
+                                    <span data-i18n="admin_settings_tab_llm">LLM / Embedding</span>
+                                </button>
+                                <button class="settings-tab-btn" data-settings-tab="settings-vector" onclick="switchSettingsSubTab('settings-vector')">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+                                    <span data-i18n="admin_settings_tab_vector">向量配置</span>
+                                </button>
+                                <button class="settings-tab-btn" data-settings-tab="settings-email" onclick="switchSettingsSubTab('settings-email')">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+                                    <span data-i18n="admin_settings_tab_email">邮件设置</span>
+                                </button>
+                                <button class="settings-tab-btn" data-settings-tab="settings-oauth" onclick="switchSettingsSubTab('settings-oauth')">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                                    <span data-i18n="admin_settings_tab_oauth">OAuth 登录</span>
+                                </button>
+                                <button class="settings-tab-btn" data-settings-tab="settings-other" onclick="switchSettingsSubTab('settings-other')">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+                                    <span data-i18n="admin_settings_tab_other">其他设置</span>
+                                </button>
+                            </div>
+
+                            <!-- Settings Sub-Tab: Basic -->
+                            <div id="settings-panel-settings-basic" class="settings-panel">
+                            <div class="admin-settings-form">
                                 <fieldset class="admin-fieldset">
                                     <legend data-i18n="admin_settings_server_port">服务端口</legend>
                                     <div class="admin-form-row admin-form-row-half">
@@ -393,6 +423,51 @@
                                     </div>
                                 </fieldset>
 
+                                <fieldset class="admin-fieldset">
+                                    <legend data-i18n="admin_settings_admin">管理员设置</legend>
+                                    <div class="admin-form-row">
+                                        <label data-i18n="admin_settings_login_route">管理员登录路由</label>
+                                        <input type="text" id="cfg-admin-login-route" placeholder="/admin">
+                                        <span class="admin-form-hint" data-i18n="admin_settings_login_route_hint">访问此隐藏路由可进入管理员登录页面</span>
+                                    </div>
+                                </fieldset>
+
+                                <fieldset class="admin-fieldset">
+                                    <legend data-i18n="admin_settings_product_name">产品名称</legend>
+                                    <div class="admin-form-row">
+                                        <label data-i18n="admin_settings_product_name_label">产品名称</label>
+                                        <input type="text" id="cfg-product-name" data-i18n-placeholder="admin_settings_product_name_placeholder" placeholder="输入产品名称，如：XX自助服务系统">
+                                        <span class="admin-form-hint" data-i18n="admin_settings_product_name_hint">设置后将自动显示在页面标题、登录页、聊天页等位置，并自动处理多语言翻译</span>
+                                    </div>
+                                </fieldset>
+
+                                <fieldset class="admin-fieldset">
+                                    <legend data-i18n="admin_settings_product_intro">产品介绍</legend>
+                                    <div class="admin-form-row">
+                                        <label data-i18n="admin_settings_product_intro_label">欢迎信息</label>
+                                        <textarea id="cfg-product-intro" rows="4" data-i18n-placeholder="admin_settings_product_intro_placeholder" placeholder="输入产品简介，用户登录后将作为欢迎信息显示"></textarea>
+                                        <span class="admin-form-hint" data-i18n="admin_settings_product_intro_hint">用户登录后在聊天页面显示此信息</span>
+                                    </div>
+                                </fieldset>
+
+                                <fieldset class="admin-fieldset">
+                                    <legend data-i18n="admin_settings_auth_server">认证服务器</legend>
+                                    <div class="admin-form-row">
+                                        <label data-i18n="admin_settings_auth_server_label">认证服务器地址</label>
+                                        <input type="text" id="cfg-auth-server" placeholder="license.vantagedata.chat">
+                                        <span class="admin-form-hint" data-i18n="admin_settings_auth_server_hint">License 认证服务器主机名，用于 SN 登录验证（如 license.vantagedata.chat）</span>
+                                    </div>
+                                </fieldset>
+
+                                <div class="admin-form-actions">
+                                    <button type="button" class="btn-primary" onclick="saveAdminSettings()" data-i18n="admin_settings_save">保存设置</button>
+                                </div>
+                            </div>
+                            </div>
+
+                            <!-- Settings Sub-Tab: LLM / Embedding -->
+                            <div id="settings-panel-settings-llm" class="settings-panel hidden">
+                            <div class="admin-settings-form">
                                 <fieldset class="admin-fieldset">
                                     <legend data-i18n="admin_settings_llm">LLM 配置</legend>
                                     <div class="admin-form-row">
@@ -456,6 +531,15 @@
                                     </div>
                                 </fieldset>
 
+                                <div class="admin-form-actions">
+                                    <button type="button" class="btn-primary" onclick="saveAdminSettings()" data-i18n="admin_settings_save">保存设置</button>
+                                </div>
+                            </div>
+                            </div>
+
+                            <!-- Settings Sub-Tab: Vector -->
+                            <div id="settings-panel-settings-vector" class="settings-panel hidden">
+                            <div class="admin-settings-form">
                                 <fieldset class="admin-fieldset">
                                     <legend data-i18n="admin_settings_vector">向量配置</legend>
                                     <div class="admin-form-row admin-form-row-half">
@@ -503,6 +587,47 @@
                                         <span class="admin-form-hint" data-i18n="admin_settings_debug_hint">开启后聊天回复会显示三级搜索的详细过程，方便排查问题</span>
                                     </div>
                                 </fieldset>
+
+                                <div class="admin-form-actions">
+                                    <button type="button" class="btn-primary" onclick="saveAdminSettings()" data-i18n="admin_settings_save">保存设置</button>
+                                </div>
+                            </div>
+                            </div>
+
+                            <!-- Settings Sub-Tab: Email -->
+                            <div id="settings-panel-settings-email" class="settings-panel hidden">
+                            <div class="admin-settings-form">
+                                <!-- Common SMTP Presets -->
+                                <div class="smtp-presets-section">
+                                    <label data-i18n="admin_settings_smtp_preset">快速填充常见邮件服务器配置：</label>
+                                    <div class="smtp-presets-grid">
+                                        <button type="button" class="smtp-preset-btn" onclick="applySmtpPreset('qq')">
+                                            <span class="smtp-preset-name">QQ 邮箱</span>
+                                            <span class="smtp-preset-host">smtp.qq.com:465</span>
+                                        </button>
+                                        <button type="button" class="smtp-preset-btn" onclick="applySmtpPreset('163')">
+                                            <span class="smtp-preset-name">网易 163</span>
+                                            <span class="smtp-preset-host">smtp.163.com:465</span>
+                                        </button>
+                                        <button type="button" class="smtp-preset-btn" onclick="applySmtpPreset('gmail')">
+                                            <span class="smtp-preset-name">Gmail</span>
+                                            <span class="smtp-preset-host">smtp.gmail.com:587</span>
+                                        </button>
+                                        <button type="button" class="smtp-preset-btn" onclick="applySmtpPreset('outlook')">
+                                            <span class="smtp-preset-name">Outlook / 365</span>
+                                            <span class="smtp-preset-host">smtp.office365.com:587</span>
+                                        </button>
+                                        <button type="button" class="smtp-preset-btn" onclick="applySmtpPreset('aliyun')">
+                                            <span class="smtp-preset-name">阿里云企业邮</span>
+                                            <span class="smtp-preset-host">smtp.qiye.aliyun.com:465</span>
+                                        </button>
+                                        <button type="button" class="smtp-preset-btn" onclick="applySmtpPreset('exmail')">
+                                            <span class="smtp-preset-name">腾讯企业邮</span>
+                                            <span class="smtp-preset-host">smtp.exmail.qq.com:465</span>
+                                        </button>
+                                    </div>
+                                    <span class="admin-form-hint" data-i18n="admin_settings_smtp_preset_hint">点击后自动填充服务器地址、端口和TLS设置，用户名和密码仍需手动填写</span>
+                                </div>
 
                                 <fieldset class="admin-fieldset">
                                     <legend data-i18n="admin_settings_smtp">邮件服务器 (SMTP)</legend>
@@ -560,15 +685,15 @@
                                     </div>
                                 </fieldset>
 
-                                <fieldset class="admin-fieldset">
-                                    <legend data-i18n="admin_settings_admin">管理员设置</legend>
-                                    <div class="admin-form-row">
-                                        <label data-i18n="admin_settings_login_route">管理员登录路由</label>
-                                        <input type="text" id="cfg-admin-login-route" placeholder="/admin">
-                                        <span class="admin-form-hint" data-i18n="admin_settings_login_route_hint">访问此隐藏路由可进入管理员登录页面</span>
-                                    </div>
-                                </fieldset>
+                                <div class="admin-form-actions">
+                                    <button type="button" class="btn-primary" onclick="saveAdminSettings()" data-i18n="admin_settings_save">保存设置</button>
+                                </div>
+                            </div>
+                            </div>
 
+                            <!-- Settings Sub-Tab: OAuth -->
+                            <div id="settings-panel-settings-oauth" class="settings-panel hidden">
+                            <div class="admin-settings-form">
                                 <fieldset class="admin-fieldset">
                                     <legend data-i18n="admin_settings_oauth">OAuth 登录设置</legend>
                                     <span class="admin-form-hint" data-i18n="admin_settings_oauth_hint">配置第三方OAuth登录，设置完成后用户可在登录页看到对应的登录按钮</span>
@@ -587,37 +712,22 @@
                                     </div>
                                 </fieldset>
 
-                                <fieldset class="admin-fieldset">
-                                    <legend data-i18n="admin_settings_product_name">产品名称</legend>
-                                    <div class="admin-form-row">
-                                        <label data-i18n="admin_settings_product_name_label">产品名称</label>
-                                        <input type="text" id="cfg-product-name" data-i18n-placeholder="admin_settings_product_name_placeholder" placeholder="输入产品名称，如：XX自助服务系统">
-                                        <span class="admin-form-hint" data-i18n="admin_settings_product_name_hint">设置后将自动显示在页面标题、登录页、聊天页等位置，并自动处理多语言翻译</span>
-                                    </div>
-                                </fieldset>
-
-                                <fieldset class="admin-fieldset">
-                                    <legend data-i18n="admin_settings_product_intro">产品介绍</legend>
-                                    <div class="admin-form-row">
-                                        <label data-i18n="admin_settings_product_intro_label">欢迎信息</label>
-                                        <textarea id="cfg-product-intro" rows="4" data-i18n-placeholder="admin_settings_product_intro_placeholder" placeholder="输入产品简介，用户登录后将作为欢迎信息显示"></textarea>
-                                        <span class="admin-form-hint" data-i18n="admin_settings_product_intro_hint">用户登录后在聊天页面显示此信息</span>
-                                    </div>
-                                </fieldset>
-
-                                <fieldset class="admin-fieldset">
-                                    <legend data-i18n="admin_settings_auth_server">认证服务器</legend>
-                                    <div class="admin-form-row">
-                                        <label data-i18n="admin_settings_auth_server_label">认证服务器地址</label>
-                                        <input type="text" id="cfg-auth-server" placeholder="license.vantagedata.chat">
-                                        <span class="admin-form-hint" data-i18n="admin_settings_auth_server_hint">License 认证服务器主机名，用于 SN 登录验证（如 license.vantagedata.chat）</span>
-                                    </div>
-                                </fieldset>
-
                                 <div class="admin-form-actions">
                                     <button type="button" class="btn-primary" onclick="saveAdminSettings()" data-i18n="admin_settings_save">保存设置</button>
                                 </div>
                             </div>
+                            </div>
+
+                            <!-- Settings Sub-Tab: Other -->
+                            <div id="settings-panel-settings-other" class="settings-panel hidden">
+                            <div class="admin-settings-form">
+                                <p class="admin-form-hint" style="margin-bottom:1rem;" data-i18n="admin_settings_other_empty">此页面暂无额外设置项，如有需要可在此扩展。</p>
+                                <div class="admin-form-actions">
+                                    <button type="button" class="btn-primary" onclick="saveAdminSettings()" data-i18n="admin_settings_save">保存设置</button>
+                                </div>
+                            </div>
+                            </div>
+
                         </div>
                     </div>
 
@@ -801,8 +911,9 @@
                                         </div>
                                         <div class="admin-dep-detail" id="dep-rapidspeech-detail" style="display:none;color:#e53e3e;font-size:0.85em;padding:2px 0 4px 28px;"></div>
                                     </div>
-                                    <div class="admin-form-row" style="margin-top:0.5rem;">
+                                    <div class="admin-form-row" style="margin-top:0.5rem;display:flex;gap:0.5rem;align-items:center;">
                                         <button type="button" class="btn-secondary btn-sm" onclick="checkMultimodalDeps()" data-i18n="admin_multimodal_recheck">重新检测</button>
+                                        <button type="button" class="btn-primary btn-sm" id="btn-auto-setup" onclick="startAutoSetup()" data-i18n="admin_multimodal_auto_setup">🔧 自动配置</button>
                                     </div>
                                 </fieldset>
 
@@ -1199,6 +1310,26 @@
                     <div class="admin-dialog-actions">
                         <button type="button" class="btn-secondary" onclick="closeAnswerDialog()" data-i18n="admin_answer_cancel">取消</button>
                         <button type="button" class="btn-primary" id="admin-answer-submit-btn" onclick="submitAdminAnswer()" data-i18n="admin_answer_submit">提交回答</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Auto Setup Modal -->
+            <div id="auto-setup-modal" class="admin-dialog-overlay hidden">
+                <div class="admin-dialog admin-dialog-wide" style="max-width:680px;">
+                    <h3 data-i18n="admin_multimodal_auto_setup_title">🔧 多模态自动配置</h3>
+                    <p class="admin-form-hint" data-i18n="admin_multimodal_auto_setup_desc" style="margin:0 0 1rem;">自动安装系统依赖、FFmpeg、编译 RapidSpeech.cpp 并下载模型文件（仅支持 Linux）</p>
+                    <div class="auto-setup-progress-wrap">
+                        <div class="auto-setup-progress-bar">
+                            <div class="auto-setup-progress-fill" id="auto-setup-progress-fill" style="width:0%"></div>
+                        </div>
+                        <span class="auto-setup-progress-text" id="auto-setup-progress-text">0%</span>
+                    </div>
+                    <div class="auto-setup-status" id="auto-setup-status" data-i18n="admin_multimodal_auto_setup_ready">准备就绪</div>
+                    <div class="auto-setup-log" id="auto-setup-log"></div>
+                    <div class="admin-dialog-actions">
+                        <button type="button" class="btn-secondary" id="auto-setup-close-btn" onclick="closeAutoSetup()" data-i18n="admin_multimodal_auto_setup_close">关闭</button>
+                        <button type="button" class="btn-primary" id="auto-setup-start-btn" onclick="confirmAutoSetup()" data-i18n="admin_multimodal_auto_setup_start">开始安装</button>
                     </div>
                 </div>
             </div>
