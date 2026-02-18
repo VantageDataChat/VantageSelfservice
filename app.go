@@ -437,7 +437,9 @@ func (a *App) ensureAdminUser() error {
 		return fmt.Errorf("ensure admin user: %w", err)
 	}
 	// Fix legacy records with empty email to avoid UNIQUE conflicts
-	a.db.Exec(`UPDATE users SET email = 'admin@internal' WHERE id = 'admin' AND email = ''`)
+	if _, err := a.db.Exec(`UPDATE users SET email = 'admin@internal' WHERE id = 'admin' AND email = ''`); err != nil {
+		log.Printf("[ensureAdminUser] failed to fix legacy admin email: %v", err)
+	}
 	return nil
 }
 
@@ -998,24 +1000,25 @@ func (a *App) ListAdminUsers() ([]AdminUserInfo, error) {
 		users = append(users, u)
 	}
 
-	// Fetch product names for each admin user
-	for i := range users {
+	// Fetch product names for all admin users in a single query (avoid N+1)
+	if len(users) > 0 {
 		pRows, err := a.db.Query(
-			`SELECT p.name FROM products p
+			`SELECT aup.admin_user_id, p.name FROM products p
 			 INNER JOIN admin_user_products aup ON p.id = aup.product_id
-			 WHERE aup.admin_user_id = ? ORDER BY p.name`, users[i].ID)
-		if err != nil {
-			continue
-		}
-		var names []string
-		for pRows.Next() {
-			var name string
-			if err := pRows.Scan(&name); err == nil {
-				names = append(names, name)
+			 ORDER BY p.name`)
+		if err == nil {
+			productMap := make(map[string][]string)
+			for pRows.Next() {
+				var adminID, name string
+				if err := pRows.Scan(&adminID, &name); err == nil {
+					productMap[adminID] = append(productMap[adminID], name)
+				}
+			}
+			pRows.Close()
+			for i := range users {
+				users[i].ProductNames = productMap[users[i].ID]
 			}
 		}
-		pRows.Close()
-		users[i].ProductNames = names
 	}
 
 	return users, nil
@@ -1469,10 +1472,14 @@ func (a *App) HandleSNLogin(token string) (*SNLoginResponse, int, error) {
 
 	// Verify token with license server
 	verifyURL := fmt.Sprintf("https://%s/api/marketplace-verify", authServer)
-	reqBody := fmt.Sprintf(`{"token":"%s"}`, token)
+	// Use json.Marshal to safely encode the token, preventing JSON injection
+	tokenJSON, err := json.Marshal(map[string]string{"token": token})
+	if err != nil {
+		return &SNLoginResponse{Success: false, Message: "internal error"}, 500, nil
+	}
 
 	client := &httpClient{Timeout: 10 * time.Second}
-	resp, err := client.Post(verifyURL, "application/json", strings.NewReader(reqBody))
+	resp, err := client.Post(verifyURL, "application/json", strings.NewReader(string(tokenJSON)))
 	if err != nil {
 		log.Printf("[SNLogin] failed to contact license server: %v", err)
 		return &SNLoginResponse{Success: false, Message: "failed to contact license server"}, 502, nil
@@ -1531,7 +1538,9 @@ func (a *App) HandleSNLogin(token string) (*SNLoginResponse, int, error) {
 		return &SNLoginResponse{Success: false, Message: "internal error"}, 500, nil
 	} else {
 		// Update last login and SN
-		a.db.Exec("UPDATE sn_users SET last_login_at = CURRENT_TIMESTAMP, sn = ? WHERE id = ?", sn, userID)
+		if _, err := a.db.Exec("UPDATE sn_users SET last_login_at = CURRENT_TIMESTAMP, sn = ? WHERE id = ?", sn, userID); err != nil {
+			log.Printf("[SNLogin] failed to update last login: %v", err)
+		}
 	}
 
 	// Generate one-time login ticket (UUID-like)
@@ -1588,8 +1597,11 @@ func (a *App) ValidateLoginTicket(ticket string) (sessionID string, err error) {
 		return "", fmt.Errorf("ticket_expired")
 	}
 
-	// Mark ticket as used
-	a.db.Exec("UPDATE login_tickets SET used = 1 WHERE ticket = ?", ticket)
+	// Mark ticket as used — must succeed to prevent replay attacks
+	if _, err := a.db.Exec("UPDATE login_tickets SET used = 1 WHERE ticket = ?", ticket); err != nil {
+		log.Printf("[ValidateLoginTicket] failed to mark ticket as used: %v", err)
+		return "", fmt.Errorf("internal_error")
+	}
 
 	// Find the SN user
 	var email, displayName string

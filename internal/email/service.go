@@ -156,46 +156,12 @@ func buildMessage(fromName, fromAddr, to, subject, body string) []byte {
 func (s *Service) send(cfg config.SMTPConfig, from, to string, msg []byte) error {
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 
-	var conn net.Conn
-	var err error
-
-	// Port 465 uses implicit TLS (SMTPS), need to establish TLS connection first
-	// Port 587/25 use STARTTLS (explicit TLS) after plain connection
-	if cfg.Port == 465 {
-		// Implicit TLS: connect with TLS directly
-		dialer := &net.Dialer{Timeout: 15 * time.Second}
-		tlsConfig := &tls.Config{
-			ServerName: cfg.Host,
-		}
-		conn, err = tls.DialWithDialer(dialer, "tcp", addr, tlsConfig)
-		if err != nil {
-			return fmt.Errorf("TLS连接邮件服务器失败: %w", err)
-		}
-	} else {
-		// Plain connection (for STARTTLS on port 587/25)
-		conn, err = net.DialTimeout("tcp", addr, 15*time.Second)
-		if err != nil {
-			return fmt.Errorf("连接邮件服务器失败: %w", err)
-		}
-	}
-	conn.SetDeadline(time.Now().Add(30 * time.Second))
-	defer conn.Close()
-
-	client, err := smtp.NewClient(conn, cfg.Host)
+	conn, client, err := s.dialSMTP(cfg, addr)
 	if err != nil {
-		return fmt.Errorf("创建SMTP客户端失败: %w", err)
+		return err
 	}
+	defer conn.Close()
 	defer client.Close()
-
-	// For non-465 ports, try STARTTLS if available
-	if cfg.Port != 465 {
-		if ok, _ := client.Extension("STARTTLS"); ok {
-			tlsConfig := &tls.Config{ServerName: cfg.Host}
-			if err := client.StartTLS(tlsConfig); err != nil {
-				return fmt.Errorf("STARTTLS失败: %w", err)
-			}
-		}
-	}
 
 	// Auth
 	var auth smtp.Auth
@@ -212,38 +178,17 @@ func (s *Service) send(cfg config.SMTPConfig, from, to string, msg []byte) error
 		// Auto mode: try PLAIN first, fall back to LOGIN on failure
 		plainAuth := newUnrestrictedPlainAuth("", cfg.Username, cfg.Password, cfg.Host)
 		if err := client.Auth(plainAuth); err != nil {
-			// PLAIN failed, reconnect and try LOGIN
+			// PLAIN failed, close current connection and reconnect for LOGIN
 			client.Close()
 			conn.Close()
 
-			// Re-establish connection
-			if cfg.Port == 465 {
-				dialer := &net.Dialer{Timeout: 15 * time.Second}
-				tlsConfig := &tls.Config{ServerName: cfg.Host}
-				conn, err = tls.DialWithDialer(dialer, "tcp", addr, tlsConfig)
-			} else {
-				conn, err = net.DialTimeout("tcp", addr, 15*time.Second)
-			}
+			conn2, client2, err := s.dialSMTP(cfg, addr)
 			if err != nil {
 				return fmt.Errorf("重连邮件服务器失败: %w", err)
 			}
-			conn.SetDeadline(time.Now().Add(30 * time.Second))
-			defer conn.Close()
-
-			client, err = smtp.NewClient(conn, cfg.Host)
-			if err != nil {
-				return fmt.Errorf("重建SMTP客户端失败: %w", err)
-			}
-			defer client.Close()
-
-			if cfg.Port != 465 {
-				if ok, _ := client.Extension("STARTTLS"); ok {
-					tlsConfig := &tls.Config{ServerName: cfg.Host}
-					if err := client.StartTLS(tlsConfig); err != nil {
-						return fmt.Errorf("STARTTLS失败: %w", err)
-					}
-				}
-			}
+			// Replace conn/client so the outer defers clean up the new ones
+			conn = conn2
+			client = client2
 
 			loginAuth := newLoginAuth(cfg.Username, cfg.Password)
 			if err := client.Auth(loginAuth); err != nil {
@@ -276,4 +221,44 @@ sendMail:
 		return fmt.Errorf("发送邮件失败: %w", err)
 	}
 	return client.Quit()
+}
+
+// dialSMTP establishes a connection and creates an SMTP client, handling TLS/STARTTLS.
+func (s *Service) dialSMTP(cfg config.SMTPConfig, addr string) (net.Conn, *smtp.Client, error) {
+	var conn net.Conn
+	var err error
+
+	if cfg.Port == 465 {
+		dialer := &net.Dialer{Timeout: 15 * time.Second}
+		tlsConfig := &tls.Config{ServerName: cfg.Host}
+		conn, err = tls.DialWithDialer(dialer, "tcp", addr, tlsConfig)
+		if err != nil {
+			return nil, nil, fmt.Errorf("TLS连接邮件服务器失败: %w", err)
+		}
+	} else {
+		conn, err = net.DialTimeout("tcp", addr, 15*time.Second)
+		if err != nil {
+			return nil, nil, fmt.Errorf("连接邮件服务器失败: %w", err)
+		}
+	}
+	conn.SetDeadline(time.Now().Add(30 * time.Second))
+
+	client, err := smtp.NewClient(conn, cfg.Host)
+	if err != nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("创建SMTP客户端失败: %w", err)
+	}
+
+	if cfg.Port != 465 {
+		if ok, _ := client.Extension("STARTTLS"); ok {
+			tlsConfig := &tls.Config{ServerName: cfg.Host}
+			if err := client.StartTLS(tlsConfig); err != nil {
+				client.Close()
+				conn.Close()
+				return nil, nil, fmt.Errorf("STARTTLS失败: %w", err)
+			}
+		}
+	}
+
+	return conn, client, nil
 }

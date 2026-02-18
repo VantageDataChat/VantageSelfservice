@@ -292,6 +292,11 @@ func createIndexes(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_video_segments_document_id ON video_segments(document_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_login_attempts_username ON login_attempts(username, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts(ip, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_pending_questions_status ON pending_questions(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_pending_questions_product_id ON pending_questions(product_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_sn_users_email ON sn_users(email)`,
+		`CREATE INDEX IF NOT EXISTS idx_login_tickets_user_id ON login_tickets(user_id)`,
 	}
 	for _, idx := range indexes {
 		if _, err := db.Exec(idx); err != nil {

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -360,7 +361,7 @@ func (dm *DocumentManager) UploadURL(req UploadURLRequest) (*DocumentInfo, error
 // record from the documents table, and the original file from disk.
 func (dm *DocumentManager) DeleteDocument(docID string) error {
 	// Validate docID to prevent path traversal in file deletion
-	if strings.ContainsAny(docID, "/\\..") {
+	if docID == "" || strings.ContainsAny(docID, "/\\") || strings.Contains(docID, "..") {
 		return fmt.Errorf("invalid document ID")
 	}
 
@@ -939,24 +940,17 @@ func validateExternalURL(rawURL string) error {
 	if strings.HasSuffix(host, ".internal") || strings.HasSuffix(host, ".local") {
 		return fmt.Errorf("不允许访问内部地址")
 	}
-	// Block private IP ranges (RFC 1918, RFC 6598, link-local, loopback)
-	if strings.HasPrefix(host, "10.") ||
-		strings.HasPrefix(host, "192.168.") ||
-		strings.HasPrefix(host, "172.16.") || strings.HasPrefix(host, "172.17.") ||
-		strings.HasPrefix(host, "172.18.") || strings.HasPrefix(host, "172.19.") ||
-		strings.HasPrefix(host, "172.20.") || strings.HasPrefix(host, "172.21.") ||
-		strings.HasPrefix(host, "172.22.") || strings.HasPrefix(host, "172.23.") ||
-		strings.HasPrefix(host, "172.24.") || strings.HasPrefix(host, "172.25.") ||
-		strings.HasPrefix(host, "172.26.") || strings.HasPrefix(host, "172.27.") ||
-		strings.HasPrefix(host, "172.28.") || strings.HasPrefix(host, "172.29.") ||
-		strings.HasPrefix(host, "172.30.") || strings.HasPrefix(host, "172.31.") ||
-		strings.HasPrefix(host, "100.64.") || // RFC 6598 CGN
-		strings.HasPrefix(host, "169.254.") || // link-local
-		strings.HasPrefix(host, "127.") || // full loopback range
-		strings.HasPrefix(host, "0.") || // 0.0.0.0/8
-		strings.HasPrefix(host, "fc") || strings.HasPrefix(host, "fd") || // IPv6 ULA
-		strings.HasPrefix(host, "fe80") { // IPv6 link-local
-		return fmt.Errorf("不允许访问内部网络地址")
+	// Block private IP ranges using proper IP parsing
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+			return fmt.Errorf("不允许访问内部网络地址")
+		}
+		// Block RFC 6598 CGN range (100.64.0.0/10)
+		cgn := net.IPNet{IP: net.ParseIP("100.64.0.0"), Mask: net.CIDRMask(10, 32)}
+		if cgn.Contains(ip) {
+			return fmt.Errorf("不允许访问内部网络地址")
+		}
 	}
 	return nil
 }
