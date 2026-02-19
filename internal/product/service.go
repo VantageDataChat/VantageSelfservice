@@ -31,12 +31,13 @@ const (
 
 // ProductService handles CRUD operations for products.
 type ProductService struct {
-	db *sql.DB
+	readDB  *sql.DB
+	writeDB *sql.DB
 }
 
-// NewProductService creates a new ProductService with the given database connection.
-func NewProductService(db *sql.DB) *ProductService {
-	return &ProductService{db: db}
+// NewProductService creates a new ProductService with separate read and write database connections.
+func NewProductService(readDB, writeDB *sql.DB) *ProductService {
+	return &ProductService{readDB: readDB, writeDB: writeDB}
 }
 
 // Create creates a new product with the given name, description, and welcome message.
@@ -61,9 +62,10 @@ func (s *ProductService) Create(name, productType, description, welcomeMessage s
 		productType = ProductTypeService // default to service
 	}
 
-	// Check uniqueness
+	// Check uniqueness via writeDB to avoid TOCTOU race between read pool and write pool.
+	// If two concurrent creates pass the readDB check simultaneously, both would succeed.
 	var count int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM products WHERE name = ?", name).Scan(&count)
+	err := s.writeDB.QueryRow("SELECT COUNT(*) FROM products WHERE name = ?", name).Scan(&count)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check product name uniqueness: %w", err)
 	}
@@ -77,7 +79,7 @@ func (s *ProductService) Create(name, productType, description, welcomeMessage s
 	}
 
 	now := time.Now()
-	_, err = s.db.Exec(
+	_, err = s.writeDB.Exec(
 		"INSERT INTO products (id, name, type, description, welcome_message, allow_download, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 		id, name, productType, description, welcomeMessage, allowDownload, now, now,
 	)
@@ -119,9 +121,9 @@ func (s *ProductService) Update(id, name, productType, description, welcomeMessa
 		productType = ProductTypeService
 	}
 
-	// Check uniqueness excluding self
+	// Check uniqueness excluding self (use writeDB to avoid TOCTOU race)
 	var count int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM products WHERE name = ? AND id != ?", name, id).Scan(&count)
+	err := s.writeDB.QueryRow("SELECT COUNT(*) FROM products WHERE name = ? AND id != ?", name, id).Scan(&count)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check product name uniqueness: %w", err)
 	}
@@ -130,7 +132,7 @@ func (s *ProductService) Update(id, name, productType, description, welcomeMessa
 	}
 
 	now := time.Now()
-	result, err := s.db.Exec(
+	result, err := s.writeDB.Exec(
 		"UPDATE products SET name = ?, type = ?, description = ?, welcome_message = ?, allow_download = ?, updated_at = ? WHERE id = ?",
 		name, productType, description, welcomeMessage, allowDownload, now, id,
 	)
@@ -152,7 +154,7 @@ func (s *ProductService) Update(id, name, productType, description, welcomeMessa
 // Delete removes a product and disassociates all related documents and chunks.
 // Uses a transaction to ensure atomicity.
 func (s *ProductService) Delete(id string) error {
-	tx, err := s.db.Begin()
+	tx, err := s.writeDB.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -194,7 +196,7 @@ func (s *ProductService) Delete(id string) error {
 func (s *ProductService) GetByID(id string) (*Product, error) {
 	var p Product
 	var allowDL int
-	err := s.db.QueryRow(
+	err := s.readDB.QueryRow(
 		"SELECT id, name, COALESCE(type, 'service'), description, welcome_message, COALESCE(allow_download, 0), created_at, updated_at FROM products WHERE id = ?", id,
 	).Scan(&p.ID, &p.Name, &p.Type, &p.Description, &p.WelcomeMessage, &allowDL, &p.CreatedAt, &p.UpdatedAt)
 	if err == sql.ErrNoRows {
@@ -209,7 +211,7 @@ func (s *ProductService) GetByID(id string) (*Product, error) {
 
 // List returns all products ordered by created_at.
 func (s *ProductService) List() ([]Product, error) {
-	rows, err := s.db.Query("SELECT id, name, COALESCE(type, 'service'), description, welcome_message, COALESCE(allow_download, 0), created_at, updated_at FROM products ORDER BY created_at")
+	rows, err := s.readDB.Query("SELECT id, name, COALESCE(type, 'service'), description, welcome_message, COALESCE(allow_download, 0), created_at, updated_at FROM products ORDER BY created_at")
 	if err != nil {
 		return nil, fmt.Errorf("failed to list products: %w", err)
 	}
@@ -229,39 +231,34 @@ func (s *ProductService) List() ([]Product, error) {
 }
 
 // HasDocumentsOrKnowledge checks if any documents or chunks are associated with the given product ID.
+// Uses EXISTS for early termination instead of COUNT(*) which scans all matching rows.
 func (s *ProductService) HasDocumentsOrKnowledge(productID string) (bool, error) {
-	var docCount int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM documents WHERE product_id = ?", productID).Scan(&docCount)
+	var exists bool
+	err := s.readDB.QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM documents WHERE product_id = ?) OR EXISTS(SELECT 1 FROM chunks WHERE product_id = ?)`,
+		productID, productID,
+	).Scan(&exists)
 	if err != nil {
-		return false, fmt.Errorf("failed to count documents: %w", err)
+		return false, fmt.Errorf("failed to check documents/knowledge: %w", err)
 	}
-	if docCount > 0 {
-		return true, nil
-	}
-
-	var chunkCount int
-	err = s.db.QueryRow("SELECT COUNT(*) FROM chunks WHERE product_id = ?", productID).Scan(&chunkCount)
-	if err != nil {
-		return false, fmt.Errorf("failed to count chunks: %w", err)
-	}
-	return chunkCount > 0, nil
+	return exists, nil
 }
 
 // HasProducts returns true if at least one product exists.
 func (s *ProductService) HasProducts() (bool, error) {
-	var count int
-	err := s.db.QueryRow("SELECT COUNT(*) FROM products").Scan(&count)
+	var exists bool
+	err := s.readDB.QueryRow("SELECT EXISTS(SELECT 1 FROM products)").Scan(&exists)
 	if err != nil {
-		return false, fmt.Errorf("failed to count products: %w", err)
+		return false, fmt.Errorf("failed to check products: %w", err)
 	}
-	return count > 0, nil
+	return exists, nil
 }
 
 // AssignAdminUser assigns a set of products to an admin user.
 // It replaces all existing product assignments for the given admin user.
 // If productIDs is empty, all existing assignments are removed (admin gets access to all products).
 func (s *ProductService) AssignAdminUser(adminUserID string, productIDs []string) error {
-	tx, err := s.db.Begin()
+	tx, err := s.writeDB.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -289,7 +286,7 @@ func (s *ProductService) AssignAdminUser(adminUserID string, productIDs []string
 // If no products are assigned, returns all products (per Requirement 2.4).
 func (s *ProductService) GetByAdminUserID(adminUserID string) ([]Product, error) {
 	// Check how many products are assigned
-	rows, err := s.db.Query("SELECT product_id FROM admin_user_products WHERE admin_user_id = ?", adminUserID)
+	rows, err := s.readDB.Query("SELECT product_id FROM admin_user_products WHERE admin_user_id = ?", adminUserID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query admin user products: %w", err)
 	}
@@ -325,7 +322,7 @@ func (s *ProductService) GetByAdminUserID(adminUserID string) ([]Product, error)
 		strings.Join(placeholders, ", "),
 	)
 
-	productRows, err := s.db.Query(query, args...)
+	productRows, err := s.readDB.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query products: %w", err)
 	}

@@ -8,76 +8,163 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+// DBPair holds separate read and write database connections for optimal
+// SQLite WAL concurrency. The write pool has a single connection (SQLite
+// only allows one writer at a time), while the read pool has multiple
+// connections for concurrent reads.
+type DBPair struct {
+	Write *sql.DB
+	Read  *sql.DB
+}
+
+// Close closes both the read and write database connections.
+func (p *DBPair) Close() error {
+	var firstErr error
+	if p.Read != nil && p.Read != p.Write {
+		if err := p.Read.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if p.Write != nil {
+		if err := p.Write.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 // InitDB opens a SQLite database connection at dbPath, enables WAL mode and
 // foreign keys, and creates all required tables idempotently.
-func InitDB(dbPath string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite3", dbPath)
+// Returns a DBPair with separate read and write pools for optimal concurrency.
+func InitDB(dbPath string) (*DBPair, error) {
+	// --- Write connection: single connection, exclusive writer ---
+	writeDB, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
+		return nil, fmt.Errorf("failed to open write database: %w", err)
 	}
-
-	if err := db.Ping(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to ping database: %w", err)
+	if err := writeDB.Ping(); err != nil {
+		writeDB.Close()
+		return nil, fmt.Errorf("failed to ping write database: %w", err)
 	}
+	// SQLite only allows one concurrent writer; a single connection avoids
+	// SQLITE_BUSY contention between writers and keeps the busy_timeout short.
+	writeDB.SetMaxOpenConns(1)
+	writeDB.SetMaxIdleConns(1)
+	writeDB.SetConnMaxLifetime(0)
 
-	// Configure connection pool for SQLite
-	// WAL mode allows concurrent readers with one writer.
-	// Use multiple connections so reads don't block behind writes.
-	db.SetMaxOpenConns(4)
-	db.SetMaxIdleConns(4)
-	db.SetConnMaxLifetime(0) // connections don't expire
-
-	if err := configurePragmas(db); err != nil {
-		db.Close()
+	if err := configureWritePragmas(writeDB); err != nil {
+		writeDB.Close()
 		return nil, err
 	}
 
-	if err := createTables(db); err != nil {
-		db.Close()
+	// --- Read connection pool: multiple connections for concurrent reads ---
+	readDB, err := sql.Open("sqlite3", dbPath+"?mode=ro")
+	if err != nil {
+		writeDB.Close()
+		return nil, fmt.Errorf("failed to open read database: %w", err)
+	}
+	if err := readDB.Ping(); err != nil {
+		readDB.Close()
+		writeDB.Close()
+		return nil, fmt.Errorf("failed to ping read database: %w", err)
+	}
+	// WAL mode allows unlimited concurrent readers. Use enough connections
+	// to saturate typical HTTP concurrency without over-allocating.
+	readDB.SetMaxOpenConns(8)
+	readDB.SetMaxIdleConns(8)
+	readDB.SetConnMaxLifetime(0)
+
+	if err := configureReadPragmas(readDB); err != nil {
+		readDB.Close()
+		writeDB.Close()
 		return nil, err
 	}
 
-	if err := createAdminUsersTable(db); err != nil {
-		db.Close()
+	// Schema setup uses the write connection
+	if err := createTables(writeDB); err != nil {
+		readDB.Close()
+		writeDB.Close()
+		return nil, err
+	}
+
+	if err := createAdminUsersTable(writeDB); err != nil {
+		readDB.Close()
+		writeDB.Close()
 		return nil, fmt.Errorf("failed to create admin_users table: %w", err)
 	}
 
-	if err := createProductTables(db); err != nil {
-		db.Close()
+	if err := createProductTables(writeDB); err != nil {
+		readDB.Close()
+		writeDB.Close()
 		return nil, fmt.Errorf("failed to create product tables: %w", err)
 	}
 
-	if err := migrateTables(db); err != nil {
-		db.Close()
+	if err := migrateTables(writeDB); err != nil {
+		readDB.Close()
+		writeDB.Close()
 		return nil, err
 	}
 
-	if err := migrateProductTables(db); err != nil {
-		db.Close()
+	if err := migrateProductTables(writeDB); err != nil {
+		readDB.Close()
+		writeDB.Close()
 		return nil, fmt.Errorf("failed to migrate product tables: %w", err)
 	}
 
-	if err := createLoginAttemptsTable(db); err != nil {
-		db.Close()
+	if err := createLoginAttemptsTable(writeDB); err != nil {
+		readDB.Close()
+		writeDB.Close()
 		return nil, fmt.Errorf("failed to create login_attempts table: %w", err)
 	}
 
-	if err := createIndexes(db); err != nil {
-		db.Close()
+	if err := createIndexes(writeDB); err != nil {
+		readDB.Close()
+		writeDB.Close()
 		return nil, err
 	}
 
-	return db, nil
+	return &DBPair{Write: writeDB, Read: readDB}, nil
 }
 
-func configurePragmas(db *sql.DB) error {
+// configureWritePragmas sets pragmas for the write connection.
+func configureWritePragmas(db *sql.DB) error {
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA foreign_keys=ON",
 		"PRAGMA busy_timeout=30000",
-		"PRAGMA secure_delete=ON",
 		"PRAGMA wal_autocheckpoint=1000",
+		// synchronous=NORMAL is safe with WAL and reduces fsync overhead significantly
+		"PRAGMA synchronous=NORMAL",
+		// 64MB page cache (negative value = KB) vs default ~2MB
+		"PRAGMA cache_size=-65536",
+		// 256MB memory-mapped I/O for faster reads
+		"PRAGMA mmap_size=268435456",
+		// Keep temp tables in memory instead of disk
+		"PRAGMA temp_store=MEMORY",
+	}
+	for _, p := range pragmas {
+		if _, err := db.Exec(p); err != nil {
+			return fmt.Errorf("failed to execute %s: %w", p, err)
+		}
+	}
+	return nil
+}
+
+// configureReadPragmas sets pragmas for read-only connections.
+// Skips write-oriented pragmas (journal_mode, synchronous, wal_autocheckpoint)
+// since the read pool never writes.
+func configureReadPragmas(db *sql.DB) error {
+	pragmas := []string{
+		// foreign_keys is needed for correct JOIN behavior on FK columns
+		"PRAGMA foreign_keys=ON",
+		// busy_timeout for when a read briefly contends with a checkpoint
+		"PRAGMA busy_timeout=30000",
+		// 64MB page cache
+		"PRAGMA cache_size=-65536",
+		// 256MB memory-mapped I/O for faster reads
+		"PRAGMA mmap_size=268435456",
+		// Keep temp tables in memory
+		"PRAGMA temp_store=MEMORY",
 	}
 	for _, p := range pragmas {
 		if _, err := db.Exec(p); err != nil {
@@ -290,13 +377,19 @@ func createIndexes(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_chunks_product_id ON chunks(product_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_video_segments_chunk_id ON video_segments(chunk_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_video_segments_document_id ON video_segments(document_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_login_attempts_username ON login_attempts(username, created_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts(ip, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_pending_questions_status ON pending_questions(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_pending_questions_product_id ON pending_questions(product_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_sn_users_email ON sn_users(email)`,
 		`CREATE INDEX IF NOT EXISTS idx_login_tickets_user_id ON login_tickets(user_id)`,
+
+		// Composite indexes for login_attempts covering CheckAllowed correlated subqueries
+		`CREATE INDEX IF NOT EXISTS idx_login_attempts_username_success ON login_attempts(username, success, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_login_attempts_ip_success ON login_attempts(ip, success, created_at)`,
+
+		// login_bans: covering index for ban lookups by username/ip + expiry
+		`CREATE INDEX IF NOT EXISTS idx_login_bans_username_unlocks ON login_bans(username, unlocks_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_login_bans_ip_unlocks ON login_bans(ip, unlocks_at)`,
 	}
 	for _, idx := range indexes {
 		if _, err := db.Exec(idx); err != nil {

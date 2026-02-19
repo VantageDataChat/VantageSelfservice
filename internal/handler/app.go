@@ -1,6 +1,6 @@
-// Package main provides the App struct that serves as the API facade
+// Package handler provides the App struct that serves as the API facade
 // for the askflow system, delegating to internal service components.
-package main
+package handler
 
 import (
 	"crypto/rand"
@@ -20,13 +20,13 @@ import (
 
 	"askflow/internal/auth"
 	"askflow/internal/config"
-	"askflow/internal/product"
 	"askflow/internal/document"
 	"askflow/internal/email"
 	"askflow/internal/embedding"
 	"askflow/internal/errlog"
 	"askflow/internal/llm"
 	"askflow/internal/pending"
+	"askflow/internal/product"
 	"askflow/internal/query"
 	"askflow/internal/vectorstore"
 )
@@ -37,7 +37,8 @@ type httpClient = http.Client
 // App is the API facade that binds all backend services for the frontend.
 // Each public method delegates to the appropriate service component.
 type App struct {
-	db             *sql.DB
+	db             *sql.DB // write DB (also used for reads in App-level queries)
+	readDB         *sql.DB // read-only DB pool for concurrent reads
 	queryEngine    *query.QueryEngine
 	docManager     *document.DocumentManager
 	pendingManager *pending.PendingQuestionManager
@@ -51,7 +52,8 @@ type App struct {
 
 // NewApp creates a new App with all service dependencies injected.
 func NewApp(
-	db *sql.DB,
+	writeDB *sql.DB,
+	readDB *sql.DB,
 	qe *query.QueryEngine,
 	dm *document.DocumentManager,
 	pm *pending.PendingQuestionManager,
@@ -62,7 +64,8 @@ func NewApp(
 	ps *product.ProductService,
 ) *App {
 	return &App{
-		db:             db,
+		db:             writeDB,
+		readDB:         readDB,
 		queryEngine:    qe,
 		docManager:     dm,
 		pendingManager: pm,
@@ -71,8 +74,12 @@ func NewApp(
 		configManager:  cm,
 		emailService:   es,
 		productService: ps,
-		loginLimiter:   auth.NewLoginLimiter(db),
+		loginLimiter:   auth.NewLoginLimiterRW(readDB, writeDB),
 	}
+}
+// SessionManager returns the session manager for testing purposes.
+func (a *App) SessionManager() *auth.SessionManager {
+	return a.sessionManager
 }
 
 // --- Query Interface ---
@@ -126,6 +133,7 @@ func (a *App) ListPendingQuestions(status string, productID string) ([]pending.P
 func (a *App) AnswerQuestion(req pending.AdminAnswerRequest) error {
 	return a.pendingManager.AnswerQuestion(req)
 }
+
 // DeletePendingQuestion removes a pending question by ID.
 func (a *App) DeletePendingQuestion(id string) error {
 	return a.pendingManager.DeletePending(id)
@@ -223,7 +231,6 @@ func (a *App) DeleteOAuthProvider(provider string) error {
 	a.RefreshOAuthClient()
 	return nil
 }
-
 
 // AdminLoginResponse contains the session created after admin login.
 type AdminLoginResponse struct {
@@ -325,7 +332,7 @@ func (a *App) GetAdminRole(userID string) string {
 	if strings.HasPrefix(userID, "admin_") {
 		subID := strings.TrimPrefix(userID, "admin_")
 		var role string
-		err := a.db.QueryRow(`SELECT role FROM admin_users WHERE id = ?`, subID).Scan(&role)
+		err := a.readDB.QueryRow(`SELECT role FROM admin_users WHERE id = ?`, subID).Scan(&role)
 		if err == nil {
 			return role
 		}
@@ -342,7 +349,7 @@ func (a *App) GetAdminPermissions(userID string) []string {
 	if strings.HasPrefix(userID, "admin_") {
 		subID := strings.TrimPrefix(userID, "admin_")
 		var role, permsStr string
-		err := a.db.QueryRow(`SELECT role, COALESCE(permissions,'') FROM admin_users WHERE id = ?`, subID).Scan(&role, &permsStr)
+		err := a.readDB.QueryRow(`SELECT role, COALESCE(permissions,'') FROM admin_users WHERE id = ?`, subID).Scan(&role, &permsStr)
 		if err != nil {
 			return nil
 		}
@@ -356,7 +363,6 @@ func (a *App) GetAdminPermissions(userID string) []string {
 	}
 	return nil
 }
-
 
 // IsAdminSession checks if a user ID belongs to any admin (super or sub).
 func (a *App) IsAdminSession(userID string) bool {
@@ -397,7 +403,7 @@ func (a *App) AdminLogin(username, password, ip string) (*AdminLoginResponse, er
 
 	// Check admin sub-accounts
 	var id, passwordHash, role string
-	err := a.db.QueryRow(
+	err := a.readDB.QueryRow(
 		`SELECT id, password_hash, role FROM admin_users WHERE username = ?`, username,
 	).Scan(&id, &passwordHash, &role)
 	if err != nil {
@@ -493,7 +499,7 @@ func (a *App) Register(req RegisterRequest, baseURL string) error {
 		name = email
 	}
 
-	// Check if email already exists
+	// Check if email already exists (use writeDB to avoid TOCTOU race with concurrent registrations)
 	var existingID string
 	err := a.db.QueryRow("SELECT id FROM users WHERE email = ?", email).Scan(&existingID)
 	if err == nil {
@@ -563,6 +569,9 @@ func (a *App) VerifyEmail(token string) error {
 	}
 
 	var userID, expiresAtStr string
+	// Use writeDB for the token lookup to prevent TOCTOU race:
+	// two concurrent requests with the same token could both read it from readDB
+	// before either deletes it, causing double-verification.
 	err := a.db.QueryRow(
 		`SELECT user_id, expires_at FROM email_tokens WHERE token = ? AND type = 'verify'`, token,
 	).Scan(&userID, &expiresAtStr)
@@ -609,26 +618,25 @@ type UserInfo struct {
 }
 
 // UserLogin authenticates a user with email and password.
-func (a *App) UserLogin(email, password string) (*UserLoginResponse, error) {
+func (a *App) UserLogin(email, password, ip string) (*UserLoginResponse, error) {
 	email = strings.TrimSpace(email)
 	if email == "" || password == "" {
 		return nil, fmt.Errorf("邮箱和密码不能为空")
 	}
 
-	// Check login rate limits and manual bans (using empty IP for now, or we can pass it if we update the signature)
-	// For simplicity in this step, we just check by email as 'username'
-	if err := a.loginLimiter.CheckAllowed(email, ""); err != nil {
+	// Check login rate limits and manual bans
+	if err := a.loginLimiter.CheckAllowed(email, ip); err != nil {
 		return nil, err
 	}
 
 	var userID, name, passwordHash string
 	var emailVerified int
-	err := a.db.QueryRow(
+	err := a.readDB.QueryRow(
 		`SELECT id, name, password_hash, email_verified FROM users WHERE email = ? AND provider = 'local'`,
 		email,
 	).Scan(&userID, &name, &passwordHash, &emailVerified)
 	if err == sql.ErrNoRows {
-		a.loginLimiter.RecordAttempt(email, "", false)
+		a.loginLimiter.RecordAttempt(email, ip, false)
 		return nil, fmt.Errorf("邮箱或密码错误")
 	}
 	if err != nil {
@@ -640,11 +648,11 @@ func (a *App) UserLogin(email, password string) (*UserLoginResponse, error) {
 	}
 
 	if err := auth.VerifyAdminPassword(password, passwordHash); err != nil {
-		a.loginLimiter.RecordAttempt(email, "", false)
+		a.loginLimiter.RecordAttempt(email, ip, false)
 		return nil, fmt.Errorf("邮箱或密码错误")
 	}
 
-	a.loginLimiter.RecordAttempt(email, "", true)
+	a.loginLimiter.RecordAttempt(email, ip, true)
 
 	// Update last login
 	a.db.Exec(`UPDATE users SET last_login = ? WHERE id = ?`, time.Now().UTC().Format(time.RFC3339), userID)
@@ -658,7 +666,7 @@ func (a *App) UserLogin(email, password string) (*UserLoginResponse, error) {
 
 	// Fetch default product (best-effort, column may not exist yet)
 	var defaultProductID string
-	_ = a.db.QueryRow(`SELECT COALESCE(default_product_id, '') FROM users WHERE id = ?`, userID).Scan(&defaultProductID)
+	_ = a.readDB.QueryRow(`SELECT COALESCE(default_product_id, '') FROM users WHERE id = ?`, userID).Scan(&defaultProductID)
 
 	return &UserLoginResponse{
 		Session: session,
@@ -979,7 +987,7 @@ func (a *App) CreateAdminUser(username, password, role string, permissions []str
 
 // ListAdminUsers returns all admin sub-accounts.
 func (a *App) ListAdminUsers() ([]AdminUserInfo, error) {
-	rows, err := a.db.Query(`SELECT id, username, role, created_at, COALESCE(permissions,'') FROM admin_users ORDER BY created_at DESC`)
+	rows, err := a.readDB.Query(`SELECT id, username, role, created_at, COALESCE(permissions,'') FROM admin_users ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -1004,7 +1012,7 @@ func (a *App) ListAdminUsers() ([]AdminUserInfo, error) {
 
 	// Fetch product names for all admin users in a single query (avoid N+1)
 	if len(users) > 0 {
-		pRows, err := a.db.Query(
+		pRows, err := a.readDB.Query(
 			`SELECT aup.admin_user_id, p.name FROM products p
 			 INNER JOIN admin_user_products aup ON p.id = aup.product_id
 			 ORDER BY p.name`)
@@ -1112,30 +1120,32 @@ func (a *App) AddKnowledgeEntry(req KnowledgeEntryRequest) error {
 	// Store image references — always create text-searchable chunks with image URLs
 	if len(req.ImageURLs) > 0 {
 		es := a.docManager.GetEmbeddingService()
-		for i, imgURL := range req.ImageURLs {
-			imgURL = strings.TrimSpace(imgURL)
-			if imgURL == "" {
-				continue
-			}
-			// Create a text-embedded chunk that carries the image URL
-			// so text-based search can find and return the image
-			imgText := fmt.Sprintf("[图片: %s] %s", title, content)
-			vec, err := es.Embed(imgText)
-			if err != nil {
-				fmt.Printf("Warning: failed to embed image text %d: %v\n", i, err)
-				continue
-			}
-			imgChunk := []vectorstore.VectorChunk{{
-				ChunkText:    fmt.Sprintf("[图片: %s]", title),
-				ChunkIndex:   1000 + i,
-				DocumentID:   docID,
-				DocumentName: docName,
-				Vector:       vec,
-				ImageURL:     imgURL,
-				ProductID:    req.ProductID,
-			}}
-			if err := a.docManager.StoreChunks(docID, imgChunk); err != nil {
-				fmt.Printf("Warning: failed to store image chunk %d: %v\n", i, err)
+		// Embed the text once and reuse for all images (same text → same embedding)
+		imgText := fmt.Sprintf("[图片: %s] %s", title, content)
+		imgVec, imgEmbErr := es.Embed(imgText)
+		if imgEmbErr != nil {
+			log.Printf("Warning: failed to embed image text: %v", imgEmbErr)
+		} else {
+			for i, imgURL := range req.ImageURLs {
+				imgURL = strings.TrimSpace(imgURL)
+				if imgURL == "" {
+					continue
+				}
+				// Copy the vector to avoid shared slice mutation
+				vecCopy := make([]float64, len(imgVec))
+				copy(vecCopy, imgVec)
+				imgChunk := []vectorstore.VectorChunk{{
+					ChunkText:    fmt.Sprintf("[图片: %s]", title),
+					ChunkIndex:   1000 + i,
+					DocumentID:   docID,
+					DocumentName: docName,
+					Vector:       vecCopy,
+					ImageURL:     imgURL,
+					ProductID:    req.ProductID,
+				}}
+				if err := a.docManager.StoreChunks(docID, imgChunk); err != nil {
+					log.Printf("Warning: failed to store image chunk %d: %v", i, err)
+				}
 			}
 		}
 
@@ -1149,7 +1159,7 @@ func (a *App) AddKnowledgeEntry(req KnowledgeEntryRequest) error {
 				}
 				vec, err := es.EmbedImageURL(imgURL)
 				if err != nil {
-					fmt.Printf("Warning: failed to embed image %d multimodal: %v\n", i, err)
+					log.Printf("Warning: failed to embed image %d multimodal: %v", i, err)
 					continue
 				}
 				imgChunk := []vectorstore.VectorChunk{{
@@ -1162,7 +1172,7 @@ func (a *App) AddKnowledgeEntry(req KnowledgeEntryRequest) error {
 					ProductID:    req.ProductID,
 				}}
 				if err := a.docManager.StoreChunks(docID, imgChunk); err != nil {
-					fmt.Printf("Warning: failed to store multimodal image vector %d: %v\n", i, err)
+					log.Printf("Warning: failed to store multimodal image vector %d: %v", i, err)
 				}
 			}
 		}
@@ -1179,7 +1189,7 @@ func (a *App) AddKnowledgeEntry(req KnowledgeEntryRequest) error {
 			// Extract file path from URL (e.g., "/api/videos/knowledge/uuid.mp4" -> "./data/videos/knowledge/uuid.mp4")
 			videoPath := strings.TrimPrefix(videoURL, "/api/videos/knowledge/")
 			if videoPath == videoURL {
-				fmt.Printf("Warning: invalid video URL format: %s\n", videoURL)
+				log.Printf("Warning: invalid video URL format: %s", videoURL)
 				continue
 			}
 			fullPath := filepath.Join(".", "data", "videos", "knowledge", videoPath)
@@ -1187,14 +1197,14 @@ func (a *App) AddKnowledgeEntry(req KnowledgeEntryRequest) error {
 			// Read video file data
 			videoData, err := os.ReadFile(fullPath)
 			if err != nil {
-				fmt.Printf("Warning: failed to read video file %s: %v\n", fullPath, err)
+				log.Printf("Warning: failed to read video file %s: %v", fullPath, err)
 				continue
 			}
 
 			// Call processVideo to extract keyframes + transcripts
 			// This will create chunks associated with this knowledge entry docID
 			if err := a.docManager.ProcessVideoForKnowledge(docID, docName, videoData, videoURL, req.ProductID); err != nil {
-				fmt.Printf("Warning: failed to process video %s: %v\n", videoPath, err)
+				log.Printf("Warning: failed to process video %s: %v", videoPath, err)
 				// Continue with other videos even if one fails
 			}
 		}
@@ -1260,7 +1270,7 @@ func (a *App) AssignProductsToAdminUser(adminUserID string, productIDs []string)
 // GetUserDefaultProduct returns the default product ID for a user.
 func (a *App) GetUserDefaultProduct(userID string) (string, error) {
 	var defaultProductID string
-	err := a.db.QueryRow(`SELECT COALESCE(default_product_id, '') FROM users WHERE id = ?`, userID).Scan(&defaultProductID)
+	err := a.readDB.QueryRow(`SELECT COALESCE(default_product_id, '') FROM users WHERE id = ?`, userID).Scan(&defaultProductID)
 	if err != nil {
 		// Column may not exist yet; return empty gracefully
 		return "", nil
@@ -1327,19 +1337,22 @@ func (a *App) ListCustomersPaged(page, pageSize int, search string) (*CustomerLi
 
 	// Get total count
 	var total int
-	err := a.db.QueryRow(`SELECT COUNT(*) FROM users WHERE `+baseWhere, args...).Scan(&total)
+	err := a.readDB.QueryRow(`SELECT COUNT(*) FROM users WHERE `+baseWhere, args...).Scan(&total)
 	if err != nil {
 		return nil, fmt.Errorf("count customers: %w", err)
 	}
 
-	// Get paginated rows
+	// Get paginated rows with ban info via LEFT JOIN (eliminates N+1 query)
+	now := time.Now().UTC().Format(time.RFC3339)
 	offset := (page - 1) * pageSize
-	queryArgs := append(args, pageSize, offset)
-	rows, err := a.db.Query(`
-		SELECT id, COALESCE(email, ''), COALESCE(name, ''), provider, email_verified, created_at, last_login
-		FROM users
-		WHERE `+baseWhere+`
-		ORDER BY created_at DESC
+	queryArgs := append(args, now, pageSize, offset)
+	rows, err := a.readDB.Query(`
+		SELECT u.id, COALESCE(u.email, ''), COALESCE(u.name, ''), u.provider, u.email_verified, u.created_at, u.last_login,
+			COALESCE(b.reason, ''), COALESCE(b.unlocks_at, '')
+		FROM users u
+		LEFT JOIN login_bans b ON (b.username = COALESCE(u.email, '') OR b.username = u.id) AND b.unlocks_at > ?
+		WHERE u.`+baseWhere+`
+		ORDER BY u.created_at DESC
 		LIMIT ? OFFSET ?
 	`, queryArgs...)
 	if err != nil {
@@ -1349,12 +1362,12 @@ func (a *App) ListCustomersPaged(page, pageSize int, search string) (*CustomerLi
 
 	var customers []CustomerUserInfo
 	bannedCount := 0
-	now := time.Now().UTC().Format(time.RFC3339)
 	for rows.Next() {
 		var c CustomerUserInfo
 		var emailVerified int
 		var createdAt, lastLogin sql.NullString
-		if err := rows.Scan(&c.ID, &c.Email, &c.Name, &c.Provider, &emailVerified, &createdAt, &lastLogin); err != nil {
+		var banReason, banUnlocksAt string
+		if err := rows.Scan(&c.ID, &c.Email, &c.Name, &c.Provider, &emailVerified, &createdAt, &lastLogin, &banReason, &banUnlocksAt); err != nil {
 			return nil, err
 		}
 		c.EmailVerified = emailVerified == 1
@@ -1364,17 +1377,10 @@ func (a *App) ListCustomersPaged(page, pageSize int, search string) (*CustomerLi
 		if lastLogin.Valid && lastLogin.String != "" {
 			c.LastLogin = lastLogin.String
 		}
-
-		// Check if banned
-		var reason, unlocksAt string
-		err := a.db.QueryRow(
-			`SELECT reason, unlocks_at FROM login_bans WHERE (username = ? OR username = ?) AND unlocks_at > ? LIMIT 1`,
-			c.Email, c.ID, now,
-		).Scan(&reason, &unlocksAt)
-		if err == nil {
+		if banReason != "" || banUnlocksAt != "" {
 			c.IsBanned = true
-			c.BanReason = reason
-			c.BanUnlocksAt = unlocksAt
+			c.BanReason = banReason
+			c.BanUnlocksAt = banUnlocksAt
 		}
 
 		customers = append(customers, c)
@@ -1382,7 +1388,7 @@ func (a *App) ListCustomersPaged(page, pageSize int, search string) (*CustomerLi
 
 	// Get global banned count (across all customers, not just current page)
 	var globalBanned int
-	err = a.db.QueryRow(`
+	err = a.readDB.QueryRow(`
 		SELECT COUNT(DISTINCT u.id) FROM users u
 		INNER JOIN login_bans b ON (b.username = COALESCE(u.email, '') OR b.username = u.id)
 		WHERE u.provider != 'admin_sub' AND u.id != 'admin' AND b.unlocks_at > ?
@@ -1517,7 +1523,8 @@ func (a *App) HandleSNLogin(token string) (*SNLoginResponse, int, error) {
 		return &SNLoginResponse{Success: false, Message: "internal error"}, 500, nil
 	}
 
-	// Find or create SN user
+	// Find or create SN user (use writeDB for the read to avoid TOCTOU race
+	// where two concurrent logins for the same email both see ErrNoRows)
 	var userID int64
 	err = a.db.QueryRow("SELECT id FROM sn_users WHERE email = ?", email).Scan(&userID)
 	if err == sql.ErrNoRows {
@@ -1577,6 +1584,9 @@ func (a *App) ValidateLoginTicket(ticket string) (sessionID string, err error) {
 	var used int
 	var expiresAtStr string
 
+	// Read ticket from writeDB (not readDB) to prevent TOCTOU race:
+	// two concurrent requests could both read used=0 from the read pool
+	// before either marks it used. Using writeDB serializes access.
 	err = a.db.QueryRow(
 		"SELECT user_id, used, expires_at FROM login_tickets WHERE ticket = ?", ticket,
 	).Scan(&userID, &used, &expiresAtStr)
@@ -1607,12 +1617,13 @@ func (a *App) ValidateLoginTicket(ticket string) (sessionID string, err error) {
 
 	// Find the SN user
 	var email, displayName string
-	err = a.db.QueryRow("SELECT email, display_name FROM sn_users WHERE id = ?", userID).Scan(&email, &displayName)
+	err = a.readDB.QueryRow("SELECT email, display_name FROM sn_users WHERE id = ?", userID).Scan(&email, &displayName)
 	if err != nil {
 		return "", fmt.Errorf("internal_error")
 	}
 
 	// Find or create a regular user entry for session management
+	// Use writeDB for the read to avoid TOCTOU race with concurrent ticket validations
 	var regularUserID string
 	err = a.db.QueryRow("SELECT id FROM users WHERE email = ? AND provider = 'sn'", email).Scan(&regularUserID)
 	if err == sql.ErrNoRows {

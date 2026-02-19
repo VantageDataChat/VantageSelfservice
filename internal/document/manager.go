@@ -365,6 +365,7 @@ func (dm *DocumentManager) UploadURL(req UploadURLRequest) (*DocumentInfo, error
 
 // DeleteDocument removes a document's vectors from the vector store, its
 // record from the documents table, and the original file from disk.
+// Uses a transaction for atomicity of database operations.
 func (dm *DocumentManager) DeleteDocument(docID string) error {
 	// Validate docID to prevent path traversal in file deletion
 	if docID == "" || strings.ContainsAny(docID, "/\\") || strings.Contains(docID, "..") {
@@ -374,16 +375,27 @@ func (dm *DocumentManager) DeleteDocument(docID string) error {
 	if err := dm.vectorStore.DeleteByDocID(docID); err != nil {
 		return fmt.Errorf("failed to delete vectors: %w", err)
 	}
-	// Delete associated video_segments records (cascade cleanup for video documents)
-	_, err := dm.db.Exec(`DELETE FROM video_segments WHERE document_id = ?`, docID)
+
+	// Use a transaction for atomicity of the two DELETE operations
+	tx, err := dm.db.Begin()
 	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Delete associated video_segments records (cascade cleanup for video documents)
+	if _, err := tx.Exec(`DELETE FROM video_segments WHERE document_id = ?`, docID); err != nil {
 		return fmt.Errorf("failed to delete video segments: %w", err)
 	}
-	_, err = dm.db.Exec(`DELETE FROM documents WHERE id = ?`, docID)
-	if err != nil {
+	if _, err := tx.Exec(`DELETE FROM documents WHERE id = ?`, docID); err != nil {
 		return fmt.Errorf("failed to delete document record: %w", err)
 	}
-	// Remove original file directory
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit delete transaction: %w", err)
+	}
+
+	// Remove original file directory (after successful DB commit)
 	dir := filepath.Join(".", "data", "uploads", docID)
 	os.RemoveAll(dir)
 	return nil
@@ -591,20 +603,36 @@ func (dm *DocumentManager) processVideo(docID, docName string, fileData []byte, 
 					return fmt.Errorf("转录向量存储失败: %w", err)
 				}
 
-				// Create video_segments records for each transcript chunk
-				for i, c := range chunks {
-					startTime, endTime := dm.mapChunkToTimeRange(c.Text, parseResult.Transcript)
-					segID, err := generateID()
-					if err != nil {
-						return fmt.Errorf("生成 segment ID 失败: %w", err)
+				// Create video_segments records for each transcript chunk using batch insert
+				if len(chunks) > 0 {
+					segTx, txErr := dm.db.Begin()
+					if txErr != nil {
+						return fmt.Errorf("开始 video_segments 事务失败: %w", txErr)
 					}
-					chunkID := fmt.Sprintf("%s-%d", docID, chunkIndex+i)
-					_, err = dm.db.Exec(
+					defer segTx.Rollback()
+
+					stmt, stmtErr := segTx.Prepare(
 						`INSERT INTO video_segments (id, document_id, segment_type, start_time, end_time, content, chunk_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-						segID, docID, "transcript", startTime, endTime, c.Text, chunkID,
 					)
-					if err != nil {
-						return fmt.Errorf("插入 video_segments 记录失败: %w", err)
+					if stmtErr != nil {
+						return fmt.Errorf("准备 video_segments 语句失败: %w", stmtErr)
+					}
+					defer stmt.Close()
+
+					for i, c := range chunks {
+						startTime, endTime := dm.mapChunkToTimeRange(c.Text, parseResult.Transcript)
+						segID, err := generateID()
+						if err != nil {
+							return fmt.Errorf("生成 segment ID 失败: %w", err)
+						}
+						chunkID := fmt.Sprintf("%s-%d", docID, chunkIndex+i)
+						if _, err := stmt.Exec(segID, docID, "transcript", startTime, endTime, c.Text, chunkID); err != nil {
+							return fmt.Errorf("插入 video_segments 记录失败: %w", err)
+						}
+					}
+
+					if err := segTx.Commit(); err != nil {
+						return fmt.Errorf("提交 video_segments 事务失败: %w", err)
 					}
 				}
 

@@ -341,26 +341,30 @@ func (pm *PendingQuestionManager) AnswerQuestion(req AdminAnswerRequest) error {
 		}
 
 		imgText := fmt.Sprintf("[图片回答: %s] %s", truncate(question, 50), answerText)
-		for i, imgURL := range req.ImageURLs {
-			if imgURL == "" {
-				continue
-			}
-			vec, embErr := pm.embeddingService.Embed(imgText)
-			if embErr != nil {
-				log.Printf("Warning: failed to embed answer image text %d: %v", i, embErr)
-				continue
-			}
-			imgChunk := []vectorstore.VectorChunk{{
-				ChunkText:    fmt.Sprintf("[图片回答: %s]", truncate(question, 50)),
-				ChunkIndex:   1000 + i,
-				DocumentID:   docID,
-				DocumentName: docName,
-				Vector:       vec,
-				ImageURL:     imgURL,
-				ProductID:    productID,
-			}}
-			if storeErr := pm.vectorStore.Store(docID, imgChunk); storeErr != nil {
-				log.Printf("Warning: failed to store answer image chunk %d: %v", i, storeErr)
+		// Embed the text once and reuse the vector for all images (same text → same embedding)
+		imgVec, embErr := pm.embeddingService.Embed(imgText)
+		if embErr != nil {
+			log.Printf("Warning: failed to embed answer image text: %v", embErr)
+		} else {
+			for i, imgURL := range req.ImageURLs {
+				if imgURL == "" {
+					continue
+				}
+				// Copy the vector to avoid shared slice mutation
+				vecCopy := make([]float64, len(imgVec))
+				copy(vecCopy, imgVec)
+				imgChunk := []vectorstore.VectorChunk{{
+					ChunkText:    fmt.Sprintf("[图片回答: %s]", truncate(question, 50)),
+					ChunkIndex:   1000 + i,
+					DocumentID:   docID,
+					DocumentName: docName,
+					Vector:       vecCopy,
+					ImageURL:     imgURL,
+					ProductID:    productID,
+				}}
+				if storeErr := pm.vectorStore.Store(docID, imgChunk); storeErr != nil {
+					log.Printf("Warning: failed to store answer image chunk %d: %v", i, storeErr)
+				}
 			}
 		}
 	}

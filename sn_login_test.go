@@ -13,6 +13,7 @@ import (
 
 	"askflow/internal/auth"
 	"askflow/internal/config"
+	"askflow/internal/handler"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -113,14 +114,20 @@ func newTestConfigManager(t *testing.T, authServer string) *config.ConfigManager
 }
 
 // newTestApp creates a minimal App for SN login testing.
-func newTestApp(t *testing.T, db *sql.DB, cm *config.ConfigManager) *App {
+func newTestApp(t *testing.T, db *sql.DB, cm *config.ConfigManager) *handler.App {
 	t.Helper()
-	return &App{
-		db:             db,
-		sessionManager: auth.NewSessionManager(db, 24*time.Hour),
-		configManager:  cm,
-		loginLimiter:   auth.NewLoginLimiter(db),
-	}
+	return handler.NewApp(
+		db,    // writeDB
+		db,    // readDB
+		nil,   // queryEngine
+		nil,   // docManager
+		nil,   // pendingManager
+		nil,   // oauthClient
+		auth.NewSessionManager(db, db, 24*time.Hour),
+		cm,
+		nil, // emailService
+		nil, // productService
+	)
 }
 
 // --- Test: POST /api/auth/sn-login returns JSON, not HTML ---
@@ -129,13 +136,13 @@ func TestSNLoginEndpoint_ReturnsJSON(t *testing.T) {
 	db := setupSNLoginTestDB(t)
 	cm := newTestConfigManager(t, "license.vantagedata.chat")
 	app := newTestApp(t, db, cm)
-	handler := handleSNLogin(app)
+	h := handler.HandleSNLogin(app)
 
 	body := `{"token":"fake-jwt-token"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/sn-login", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	h.ServeHTTP(rec, req)
 
 	ct := rec.Header().Get("Content-Type")
 	if !strings.Contains(ct, "application/json") {
@@ -153,11 +160,11 @@ func TestSNLoginEndpoint_MethodNotAllowed(t *testing.T) {
 	db := setupSNLoginTestDB(t)
 	cm := newTestConfigManager(t, "license.vantagedata.chat")
 	app := newTestApp(t, db, cm)
-	handler := handleSNLogin(app)
+	h := handler.HandleSNLogin(app)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/sn-login", nil)
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	h.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
@@ -168,19 +175,19 @@ func TestSNLoginEndpoint_EmptyToken(t *testing.T) {
 	db := setupSNLoginTestDB(t)
 	cm := newTestConfigManager(t, "license.vantagedata.chat")
 	app := newTestApp(t, db, cm)
-	handler := handleSNLogin(app)
+	h := handler.HandleSNLogin(app)
 
 	body := `{"token":""}`
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/sn-login", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	h.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 
-	var resp SNLoginResponse
+	var resp handler.SNLoginResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
@@ -196,12 +203,12 @@ func TestSNLoginEndpoint_InvalidJSON(t *testing.T) {
 	db := setupSNLoginTestDB(t)
 	cm := newTestConfigManager(t, "license.vantagedata.chat")
 	app := newTestApp(t, db, cm)
-	handler := handleSNLogin(app)
+	h := handler.HandleSNLogin(app)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/sn-login", strings.NewReader("not json"))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	h.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -286,7 +293,7 @@ func TestHandleSNLogin_FullFlowWithFakeLicenseServer(t *testing.T) {
 	}
 
 	// Verify session was created
-	session, err := app.sessionManager.ValidateSession(sessionID)
+	session, err := app.SessionManager().ValidateSession(sessionID)
 	if err != nil {
 		t.Fatalf("ValidateSession: %v", err)
 	}
@@ -408,11 +415,11 @@ func TestTicketLoginHandler_Success(t *testing.T) {
 		ticket, userID, expiresAt.Format(time.RFC3339))
 
 	app := newTestApp(t, db, newTestConfigManager(t, ""))
-	handler := handleTicketLogin(app)
+	h := handler.HandleTicketLogin(app)
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/ticket-login?ticket="+ticket, nil)
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	h.ServeHTTP(rec, req)
 
 	// Should redirect with 302 to /?ticket=xxx (frontend handles exchange)
 	if rec.Code != http.StatusFound {
@@ -428,11 +435,11 @@ func TestTicketLoginHandler_Success(t *testing.T) {
 func TestTicketLoginHandler_InvalidTicket(t *testing.T) {
 	db := setupSNLoginTestDB(t)
 	app := newTestApp(t, db, newTestConfigManager(t, ""))
-	handler := handleTicketLogin(app)
+	h := handler.HandleTicketLogin(app)
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/ticket-login?ticket=bad-ticket", nil)
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	h.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusFound {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusFound)
@@ -446,11 +453,11 @@ func TestTicketLoginHandler_InvalidTicket(t *testing.T) {
 func TestTicketLoginHandler_MethodNotAllowed(t *testing.T) {
 	db := setupSNLoginTestDB(t)
 	app := newTestApp(t, db, newTestConfigManager(t, ""))
-	handler := handleTicketLogin(app)
+	h := handler.HandleTicketLogin(app)
 
 	req := httptest.NewRequest(http.MethodPost, "/auth/ticket-login?ticket=any", nil)
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	h.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusFound {
 		t.Errorf("status = %d, want %d (redirect)", rec.Code, http.StatusFound)
@@ -467,7 +474,7 @@ func TestSPAHandler_APIPathReturnsJSON404(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html><body>SPA</body></html>"), 0644)
 
-	handler := spaHandler(dir)
+	h := handler.SpaHandler(dir)
 
 	apiPaths := []string{
 		"/api/auth/sn-login",
@@ -481,7 +488,7 @@ func TestSPAHandler_APIPathReturnsJSON404(t *testing.T) {
 		t.Run(path, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, path, nil)
 			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, req)
+			h.ServeHTTP(rec, req)
 
 			ct := rec.Header().Get("Content-Type")
 			if !strings.Contains(ct, "application/json") {
@@ -509,14 +516,14 @@ func TestSPAHandler_NonAPIPathServesHTML(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "index.html"), []byte("<!DOCTYPE html><html><body>SPA</body></html>"), 0644)
 
-	handler := spaHandler(dir)
+	h := handler.SpaHandler(dir)
 
 	paths := []string{"/", "/login", "/dashboard", "/some/page"}
 	for _, p := range paths {
 		t.Run(p, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, p, nil)
 			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, req)
+			h.ServeHTTP(rec, req)
 
 			body := rec.Body.String()
 			if !strings.Contains(body, "SPA") {
@@ -544,7 +551,7 @@ func TestRoutePriority_APIBeforeSPA(t *testing.T) {
 	// Register SPA catch-all
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>SPA</html>"), 0644)
-	mux.Handle("/", spaHandler(dir))
+	mux.Handle("/", handler.SpaHandler(dir))
 
 	// /api/auth/sn-login → API handler
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/sn-login", nil)
@@ -600,10 +607,10 @@ func TestFullTicketLoginFlow(t *testing.T) {
 	app := newTestApp(t, db, newTestConfigManager(t, ""))
 
 	// Step 3: Hit the ticket-login endpoint — should redirect to /?ticket=xxx
-	handler := handleTicketLogin(app)
+	h := handler.HandleTicketLogin(app)
 	req := httptest.NewRequest(http.MethodGet, "/auth/ticket-login?ticket="+ticket, nil)
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	h.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusFound)
@@ -613,7 +620,7 @@ func TestFullTicketLoginFlow(t *testing.T) {
 	}
 
 	// Step 4: Frontend calls POST /api/auth/ticket-exchange with the ticket
-	exchangeHandler := handleTicketExchange(app)
+	exchangeHandler := handler.HandleTicketExchange(app)
 	body := `{"ticket":"` + ticket + `"}`
 	req = httptest.NewRequest(http.MethodPost, "/api/auth/ticket-exchange", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")

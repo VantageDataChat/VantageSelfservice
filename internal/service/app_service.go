@@ -22,6 +22,7 @@ import (
 	"askflow/internal/email"
 	"askflow/internal/embedding"
 	"askflow/internal/errlog"
+	"askflow/internal/handler"
 	"askflow/internal/llm"
 	"askflow/internal/parser"
 	"askflow/internal/pending"
@@ -35,7 +36,7 @@ import (
 type AppService struct {
 	server          *http.Server
 	configManager   *config.ConfigManager
-	database        *sql.DB
+	dbPair          *db.DBPair
 	sessionManager  *auth.SessionManager
 	queryEngine     *query.QueryEngine
 	docManager      *document.DocumentManager
@@ -87,10 +88,14 @@ func (as *AppService) Initialize(dataDir string, overrideBind string, overridePo
 	if err != nil {
 		return fmt.Errorf("failed to initialize database: %w", err)
 	}
-	as.database = database
+	as.dbPair = database
 
 	// 4. Create service instances
-	vs := vectorstore.NewSQLiteVectorStore(database)
+	// Use write DB for stores that need to write, read DB for read-heavy services
+	writeDB := database.Write
+	readDB := database.Read
+
+	vs := vectorstore.NewSQLiteVectorStore(writeDB)
 	log.Printf("[SIMD] Vector acceleration: %s", vectorstore.SIMDCapability())
 	tc := &chunker.TextChunker{ChunkSize: as.cfg.Vector.ChunkSize, Overlap: as.cfg.Vector.Overlap}
 	dp := &parser.DocumentParser{}
@@ -107,7 +112,7 @@ func (as *AppService) Initialize(dataDir string, overrideBind string, overridePo
 		as.cfg.LLM.Temperature,
 		as.cfg.LLM.MaxTokens,
 	)
-	as.docManager = document.NewDocumentManager(dp, tc, es, vs, database)
+	as.docManager = document.NewDocumentManager(dp, tc, es, vs, writeDB)
 	as.docManager.SetVideoConfig(as.cfg.Video)
 
 	// Video dependency check
@@ -128,11 +133,11 @@ func (as *AppService) Initialize(dataDir string, overrideBind string, overridePo
 			statusStr(depsResult.RapidSpeechOK, depsResult.RapidSpeechError))
 	}
 
-	as.productService = product.NewProductService(database)
-	as.queryEngine = query.NewQueryEngine(es, vs, ls, database, as.cfg)
-	as.pendingManager = pending.NewPendingQuestionManager(database, tc, es, vs, ls)
+	as.productService = product.NewProductService(readDB, writeDB)
+	as.queryEngine = query.NewQueryEngine(es, vs, ls, writeDB, as.cfg)
+	as.pendingManager = pending.NewPendingQuestionManager(writeDB, tc, es, vs, ls)
 	as.oauthClient = auth.NewOAuthClient(as.cfg.OAuth.Providers)
-	as.sessionManager = auth.NewSessionManager(database, 24*time.Hour)
+	as.sessionManager = auth.NewSessionManager(readDB, writeDB, 24*time.Hour)
 
 	// Create email service
 	as.emailService = email.NewService(func() config.SMTPConfig {
@@ -213,7 +218,7 @@ func (as *AppService) runSessionCleanup(ctx context.Context) {
 		}
 	}()
 	// Create a single LoginLimiter instance for reuse across cleanup cycles
-	ll := auth.NewLoginLimiter(as.database)
+	ll := auth.NewLoginLimiter(as.dbPair.Write)
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 	for {
@@ -258,11 +263,11 @@ func (as *AppService) Shutdown(timeout time.Duration) error {
 	}
 
 	// Close database (only once)
-	if as.database != nil {
-		if err := as.database.Close(); err != nil {
+	if as.dbPair != nil {
+		if err := as.dbPair.Close(); err != nil {
 			log.Printf("Database close error: %v", err)
 		}
-		as.database = nil
+		as.dbPair = nil
 	}
 
 	log.Println("Server stopped")
@@ -270,14 +275,29 @@ func (as *AppService) Shutdown(timeout time.Duration) error {
 	return nil
 }
 
-// GetServer returns the HTTP server instance for handler registration.
-func (as *AppService) GetServer() *http.Server {
-	return as.server
+// CreateApp creates an App facade instance with all dependencies injected internally.
+// This replaces the previous pattern of externally fetching each dependency via getters.
+func (as *AppService) CreateApp() *handler.App {
+	return handler.NewApp(
+		as.dbPair.Write,
+		as.dbPair.Read,
+		as.queryEngine,
+		as.docManager,
+		as.pendingManager,
+		as.oauthClient,
+		as.sessionManager,
+		as.configManager,
+		as.emailService,
+		as.productService,
+	)
 }
 
-// GetDatabase returns the database connection.
+// GetDatabase returns the write database connection (for backward compatibility and CLI usage).
 func (as *AppService) GetDatabase() *sql.DB {
-	return as.database
+	if as.dbPair == nil {
+		return nil
+	}
+	return as.dbPair.Write
 }
 
 // GetConfigManager returns the configuration manager.
@@ -285,44 +305,14 @@ func (as *AppService) GetConfigManager() *config.ConfigManager {
 	return as.configManager
 }
 
-// GetConfig returns the current configuration.
-func (as *AppService) GetConfig() *config.Config {
-	return as.cfg
-}
-
 // GetDataDir returns the data directory path.
 func (as *AppService) GetDataDir() string {
 	return as.dataDir
 }
 
-// GetQueryEngine returns the query engine.
-func (as *AppService) GetQueryEngine() *query.QueryEngine {
-	return as.queryEngine
-}
-
 // GetDocManager returns the document manager.
 func (as *AppService) GetDocManager() *document.DocumentManager {
 	return as.docManager
-}
-
-// GetPendingManager returns the pending question manager.
-func (as *AppService) GetPendingManager() *pending.PendingQuestionManager {
-	return as.pendingManager
-}
-
-// GetOAuthClient returns the OAuth client.
-func (as *AppService) GetOAuthClient() *auth.OAuthClient {
-	return as.oauthClient
-}
-
-// GetSessionManager returns the session manager.
-func (as *AppService) GetSessionManager() *auth.SessionManager {
-	return as.sessionManager
-}
-
-// GetEmailService returns the email service.
-func (as *AppService) GetEmailService() *email.Service {
-	return as.emailService
 }
 
 // GetProductService returns the product service.

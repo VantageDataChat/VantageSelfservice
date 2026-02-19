@@ -3363,6 +3363,9 @@
                         autoSetupRunning = false;
                         autoSetupAbort = null;
                         if (closeBtn) closeBtn.disabled = false;
+                        if (startBtn) { startBtn.disabled = false; startBtn.classList.remove('hidden'); }
+                        checkMultimodalDeps();
+                        loadMultimodalSettings();
                         return;
                     }
                     buffer += decoder.decode(result.value, { stream: true });
@@ -3394,7 +3397,8 @@
                                 autoSetupRunning = false;
                                 autoSetupAbort = null;
                                 if (closeBtn) closeBtn.disabled = false;
-                                if (isSuccess) { checkMultimodalDeps(); loadMultimodalSettings(); }
+                                checkMultimodalDeps();
+                                loadMultimodalSettings();
                             } else if (evt.type === 'log') {
                                 appendLog(evt.message, '');
                             }
@@ -3416,6 +3420,7 @@
             autoSetupRunning = false;
             autoSetupAbort = null;
             if (closeBtn) closeBtn.disabled = false;
+            if (startBtn) { startBtn.disabled = false; startBtn.classList.remove('hidden'); }
         });
     };
 

@@ -54,14 +54,14 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 	}
 	tmpFile.Close()
 
-	database, err := db.InitDB(tmpFile.Name())
+	dbPair, err := db.InitDB(tmpFile.Name())
 	if err != nil {
 		os.Remove(tmpFile.Name())
 		t.Fatalf("failed to init db: %v", err)
 	}
 
-	return database, func() {
-		database.Close()
+	return dbPair.Write, func() {
+		dbPair.Close()
 		os.Remove(tmpFile.Name())
 	}
 }

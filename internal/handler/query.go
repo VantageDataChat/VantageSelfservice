@@ -1,0 +1,64 @@
+package handler
+
+import (
+	"log"
+	"net/http"
+	"strings"
+
+	"askflow/internal/errlog"
+	"askflow/internal/query"
+)
+
+// HandleQuery processes a user question through the RAG pipeline.
+func HandleQuery(app *App) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		// Validate user session
+		_, err := GetUserSession(app, r)
+		if err != nil {
+			WriteError(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		var req query.QueryRequest
+		if err := ReadJSONBody(r, &req); err != nil {
+			WriteError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		question := strings.TrimSpace(req.Question)
+		if question == "" {
+			WriteError(w, http.StatusBadRequest, "question is required")
+			return
+		}
+		// Limit question length to prevent abuse
+		if len(question) > 10000 {
+			WriteError(w, http.StatusBadRequest, "question too long (max 10000 characters)")
+			return
+		}
+		req.Question = question
+		// Default to first product if no product_id specified
+		if req.ProductID == "" {
+			products, pErr := app.ListProducts()
+			if pErr == nil && len(products) > 0 {
+				req.ProductID = products[0].ID
+			}
+		}
+		resp, err := app.queryEngine.Query(req)
+		if err != nil {
+			log.Printf("[Query] error: %v", err)
+			errlog.Logf("[Query] query processing failed: %v", err)
+			WriteError(w, http.StatusInternalServerError, "查询处理失败，请稍后重试")
+			return
+		}
+		// Check if product allows document download
+		if req.ProductID != "" {
+			p, pErr := app.GetProduct(req.ProductID)
+			if pErr == nil && p != nil {
+				resp.AllowDownload = p.AllowDownload
+			}
+		}
+		WriteJSON(w, http.StatusOK, resp)
+	}
+}

@@ -160,20 +160,25 @@ func (s *Service) send(cfg config.SMTPConfig, from, to string, msg []byte) error
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
-	defer client.Close()
+	// Use a cleanup function that closes the current conn/client,
+	// since they may be reassigned during auto-auth fallback.
+	cleanup := func() {
+		client.Close()
+		conn.Close()
+	}
+	defer func() { cleanup() }()
 
 	// Auth
-	var auth smtp.Auth
+	var authMech smtp.Auth
 	method := strings.ToUpper(strings.TrimSpace(cfg.AuthMethod))
 	switch method {
 	case "LOGIN":
-		auth = newLoginAuth(cfg.Username, cfg.Password)
+		authMech = newLoginAuth(cfg.Username, cfg.Password)
 	case "NONE", "NOAUTH":
 		// Skip authentication entirely (for relay servers)
-		auth = nil
+		authMech = nil
 	case "PLAIN":
-		auth = newUnrestrictedPlainAuth("", cfg.Username, cfg.Password, cfg.Host)
+		authMech = newUnrestrictedPlainAuth("", cfg.Username, cfg.Password, cfg.Host)
 	default:
 		// Auto mode: try PLAIN first, fall back to LOGIN on failure
 		plainAuth := newUnrestrictedPlainAuth("", cfg.Username, cfg.Password, cfg.Host)
@@ -182,11 +187,13 @@ func (s *Service) send(cfg config.SMTPConfig, from, to string, msg []byte) error
 			client.Close()
 			conn.Close()
 
-			conn2, client2, err := s.dialSMTP(cfg, addr)
-			if err != nil {
-				return fmt.Errorf("重连邮件服务器失败: %w", err)
+			conn2, client2, dialErr := s.dialSMTP(cfg, addr)
+			if dialErr != nil {
+				// Update cleanup to no-op since we already closed the originals
+				cleanup = func() {}
+				return fmt.Errorf("重连邮件服务器失败: %w", dialErr)
 			}
-			// Replace conn/client so the outer defers clean up the new ones
+			// Replace conn/client so the deferred cleanup closes the new ones
 			conn = conn2
 			client = client2
 
@@ -198,8 +205,8 @@ func (s *Service) send(cfg config.SMTPConfig, from, to string, msg []byte) error
 		// Auth succeeded in auto mode, skip the auth block below
 		goto sendMail
 	}
-	if auth != nil {
-		if err := client.Auth(auth); err != nil {
+	if authMech != nil {
+		if err := client.Auth(authMech); err != nil {
 			return fmt.Errorf("邮件认证失败 (auth=%s): %w", method, err)
 		}
 	}
@@ -220,7 +227,10 @@ sendMail:
 	if err := w.Close(); err != nil {
 		return fmt.Errorf("发送邮件失败: %w", err)
 	}
-	return client.Quit()
+	// Quit handles closing the client, so prevent double-close in cleanup
+	err = client.Quit()
+	cleanup = func() { conn.Close() }
+	return err
 }
 
 // dialSMTP establishes a connection and creates an SMTP client, handling TLS/STARTTLS.

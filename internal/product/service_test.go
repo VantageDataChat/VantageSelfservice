@@ -107,7 +107,7 @@ func TestProperty1_CRUDRoundTrip(t *testing.T) {
 	f := func(nameSeed string, desc string, welcome string, newNameSeed string, newDesc string, newWelcome string) bool {
 		db, cleanup := setupTestDB(t)
 		defer cleanup()
-		svc := NewProductService(db)
+		svc := NewProductService(db, db)
 
 		counter++
 		name := sanitizeName(nameSeed, counter)
@@ -170,7 +170,7 @@ func TestProperty2_NameUniquenessAndNonEmpty(t *testing.T) {
 		f := func(nameSeed string, desc1 string, desc2 string) bool {
 			db, cleanup := setupTestDB(t)
 			defer cleanup()
-			svc := NewProductService(db)
+			svc := NewProductService(db, db)
 
 			counter++
 			name := sanitizeName(nameSeed, counter)
@@ -201,7 +201,7 @@ func TestProperty2_NameUniquenessAndNonEmpty(t *testing.T) {
 		f := func(spaces uint8) bool {
 			db, cleanup := setupTestDB(t)
 			defer cleanup()
-			svc := NewProductService(db)
+			svc := NewProductService(db, db)
 
 			// Empty string
 			_, err := svc.Create("", "service", "desc", "", false)
@@ -245,7 +245,7 @@ func TestProperty3_DeleteCascade(t *testing.T) {
 	f := func(nameSeed string, docName string) bool {
 		db, cleanup := setupTestDB(t)
 		defer cleanup()
-		svc := NewProductService(db)
+		svc := NewProductService(db, db)
 
 		counter++
 		name := sanitizeName(nameSeed, counter)
@@ -341,7 +341,7 @@ func TestProperty4_AdminProductAssignmentRoundTrip(t *testing.T) {
 	f := func(numProducts uint8) bool {
 		db, cleanup := setupTestDB(t)
 		defer cleanup()
-		svc := NewProductService(db)
+		svc := NewProductService(db, db)
 
 		counter++
 
@@ -455,7 +455,7 @@ func TestProperty5_AdminProductSelectionLogic(t *testing.T) {
 	f := func(numProducts uint8) bool {
 		db, cleanup := setupTestDB(t)
 		defer cleanup()
-		svc := NewProductService(db)
+		svc := NewProductService(db, db)
 
 		counter++
 

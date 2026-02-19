@@ -31,7 +31,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 
 func TestCreateSession(t *testing.T) {
 	db := setupTestDB(t)
-	sm := NewSessionManager(db, time.Hour)
+	sm := NewSessionManager(db, db, time.Hour)
 
 	session, err := sm.CreateSession("user-1")
 	if err != nil {
@@ -55,7 +55,7 @@ func TestCreateSession(t *testing.T) {
 
 func TestCreateSession_UniqueIDs(t *testing.T) {
 	db := setupTestDB(t)
-	sm := NewSessionManager(db, time.Hour)
+	sm := NewSessionManager(db, db, time.Hour)
 
 	s1, err := sm.CreateSession("user-1")
 	if err != nil {
@@ -72,7 +72,7 @@ func TestCreateSession_UniqueIDs(t *testing.T) {
 
 func TestValidateSession_Valid(t *testing.T) {
 	db := setupTestDB(t)
-	sm := NewSessionManager(db, time.Hour)
+	sm := NewSessionManager(db, db, time.Hour)
 
 	created, err := sm.CreateSession("user-1")
 	if err != nil {
@@ -91,7 +91,7 @@ func TestValidateSession_Valid(t *testing.T) {
 func TestValidateSession_Expired(t *testing.T) {
 	db := setupTestDB(t)
 	// Use a very short expiry so the session is already expired
-	sm := NewSessionManager(db, time.Millisecond)
+	sm := NewSessionManager(db, db, time.Millisecond)
 
 	created, err := sm.CreateSession("user-1")
 	if err != nil {
@@ -112,7 +112,7 @@ func TestValidateSession_Expired(t *testing.T) {
 
 func TestValidateSession_NotFound(t *testing.T) {
 	db := setupTestDB(t)
-	sm := NewSessionManager(db, time.Hour)
+	sm := NewSessionManager(db, db, time.Hour)
 
 	_, err := sm.ValidateSession("nonexistent-id")
 	if err == nil {
@@ -125,7 +125,7 @@ func TestValidateSession_NotFound(t *testing.T) {
 
 func TestDeleteSession(t *testing.T) {
 	db := setupTestDB(t)
-	sm := NewSessionManager(db, time.Hour)
+	sm := NewSessionManager(db, db, time.Hour)
 
 	created, err := sm.CreateSession("user-1")
 	if err != nil {
@@ -145,7 +145,7 @@ func TestDeleteSession(t *testing.T) {
 
 func TestCleanExpired(t *testing.T) {
 	db := setupTestDB(t)
-	sm := NewSessionManager(db, time.Millisecond)
+	sm := NewSessionManager(db, db, time.Millisecond)
 
 	// Create sessions that will expire immediately
 	_, err := sm.CreateSession("user-1")
@@ -160,7 +160,7 @@ func TestCleanExpired(t *testing.T) {
 	time.Sleep(5 * time.Millisecond)
 
 	// Create a session that won't expire
-	smLong := NewSessionManager(db, time.Hour)
+	smLong := NewSessionManager(db, db, time.Hour)
 	_, err = smLong.CreateSession("user-3")
 	if err != nil {
 		t.Fatalf("CreateSession 3: %v", err)
@@ -184,7 +184,7 @@ func TestCleanExpired(t *testing.T) {
 
 func TestNewSessionManager_DefaultExpiry(t *testing.T) {
 	db := setupTestDB(t)
-	sm := NewSessionManager(db, 0)
+	sm := NewSessionManager(db, db, 0)
 	if sm.expiry != DefaultSessionExpiry {
 		t.Errorf("expiry = %v, want %v", sm.expiry, DefaultSessionExpiry)
 	}

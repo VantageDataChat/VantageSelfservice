@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"askflow/internal/handler"
+	"askflow/internal/router"
 	"askflow/internal/service"
 	askflowSvc "askflow/internal/svc"
 
@@ -113,9 +115,9 @@ func runAsService(dataDir string) {
 	}
 
 	// Create App and register handlers
-	app := createApp(appSvc)
-	registerAPIHandlers(app)
-	http.Handle("/", spaHandler("frontend/dist"))
+	app := appSvc.CreateApp()
+	router.Register(app)
+	http.Handle("/", handler.SpaHandler("frontend/dist"))
 
 	// Create Windows service handler
 	askflowService := askflowSvc.NewAskflowService(appSvc, logger)
