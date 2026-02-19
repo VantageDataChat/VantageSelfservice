@@ -1457,98 +1457,91 @@
             return html;
         });
 
-        // Mixed ordered lists with nested bullet points
-        // Handles patterns like: 1. title\n  • bullet\n  • bullet\n2. title\n ...
+        // Mixed ordered lists with nested bullet/sub-content
+        // Handles patterns like:
+        //   1. title
+        //   • bullet (or - bullet, * bullet, indented text)
+        //   • bullet
+        //   2. title
+        //   ...
         text = (function (t) {
             var lines = t.split('\n');
             var result = [];
-            var olItems = []; // collected ordered list items: [{num, content}]
-            var currentOlContent = ''; // accumulated sub-content for current OL item
+            var olItems = []; // [{num, lines: [contentLine, ...]}]
 
             function flushOl() {
                 if (olItems.length === 0) return;
-                // Determine if all numbers are the same (lazy markdown numbering)
-                var allSame = olItems.every(function (it) { return it.num === olItems[0].num; });
                 var html = '<ol class="md-list">';
                 for (var i = 0; i < olItems.length; i++) {
-                    var valAttr = '';
-                    if (!allSame) {
-                        valAttr = ' value="' + olItems[i].num + '"';
+                    var item = olItems[i];
+                    var inner = item.lines[0]; // first line is the title
+                    if (item.lines.length > 1) {
+                        // Build nested <ul> for sub-bullets
+                        inner += '<ul class="md-list" style="margin:2px 0 2px 0;">';
+                        for (var s = 1; s < item.lines.length; s++) {
+                            inner += '<li>' + item.lines[s] + '</li>';
+                        }
+                        inner += '</ul>';
                     }
-                    html += '<li' + valAttr + '>' + olItems[i].content + '</li>';
+                    html += '<li value="' + item.num + '">' + inner + '</li>';
                 }
                 html += '</ol>';
                 result.push(html);
                 olItems = [];
-                currentOlContent = '';
+            }
+
+            // Detect if a line is a sub-item belonging to the current OL item:
+            // - bullet lines: •, -, * at start (with or without leading spaces)
+            // - indented continuation text
+            function isSubLine(line) {
+                if (/^\s*[•] /.test(line)) return true;
+                if (/^\s+[-*] /.test(line)) return true; // indented - or *
+                if (/^\s{2,}/.test(line) && line.trim() !== '') return true; // indented continuation
+                return false;
+            }
+
+            function stripBullet(line) {
+                return line.replace(/^\s*[•]\s*/, '').replace(/^\s+[-*]\s+/, '').replace(/^\s{2,}/, '');
             }
 
             for (var i = 0; i < lines.length; i++) {
                 var line = lines[i];
-                var olMatch = line.match(/^(\s*?)(\d+)\. (.+)$/);
+                var olMatch = line.match(/^(\d+)\.\s+(.+)$/);
                 if (olMatch) {
-                    // If we have accumulated sub-content, attach it to previous OL item
-                    if (olItems.length > 0 && currentOlContent) {
-                        olItems[olItems.length - 1].content += currentOlContent;
-                        currentOlContent = '';
+                    olItems.push({ num: parseInt(olMatch[1], 10), lines: [olMatch[2]] });
+                } else if (olItems.length > 0 && isSubLine(line)) {
+                    // Attach as sub-content to the last OL item
+                    olItems[olItems.length - 1].lines.push(stripBullet(line));
+                } else if (olItems.length > 0 && line.trim() === '') {
+                    // Empty line — peek ahead to see if list continues
+                    var continues = false;
+                    for (var j = i + 1; j < lines.length; j++) {
+                        if (lines[j].trim() === '') continue;
+                        if (/^\d+\.\s+/.test(lines[j]) || isSubLine(lines[j])) {
+                            continues = true;
+                        }
+                        break;
                     }
-                    olItems.push({ num: parseInt(olMatch[2], 10), content: olMatch[3] });
-                } else if (olItems.length > 0) {
-                    // Check if this is a sub-item (indented bullet, or continuation)
-                    var isSub = /^\s+[-*•] /.test(line) || /^\s+/.test(line) && line.trim() !== '';
-                    if (isSub) {
-                        // Render sub-bullets inline within the current OL item
-                        var subBullet = line.replace(/^\s+[-*•] /, '');
-                        currentOlContent += '<br>&nbsp;&nbsp;• ' + subBullet;
-                    } else if (line.trim() === '') {
-                        // Empty line — could be spacing within the list, peek ahead
-                        var hasMoreOl = false;
-                        for (var j = i + 1; j < lines.length; j++) {
-                            if (lines[j].trim() === '') continue;
-                            if (/^\s*\d+\. /.test(lines[j]) || /^\s+[-*•] /.test(lines[j])) {
-                                hasMoreOl = true;
-                            }
-                            break;
-                        }
-                        if (hasMoreOl) {
-                            // Keep going, this empty line is within the list
-                            continue;
-                        } else {
-                            // End of list
-                            if (currentOlContent) {
-                                olItems[olItems.length - 1].content += currentOlContent;
-                                currentOlContent = '';
-                            }
-                            flushOl();
-                            result.push(line);
-                        }
-                    } else {
-                        // Non-list line encountered, flush the OL
-                        if (currentOlContent) {
-                            olItems[olItems.length - 1].content += currentOlContent;
-                            currentOlContent = '';
-                        }
+                    if (!continues) {
                         flushOl();
                         result.push(line);
                     }
+                    // else: skip empty line, list continues
                 } else {
+                    flushOl();
                     result.push(line);
                 }
-            }
-            // Flush any remaining OL items
-            if (currentOlContent && olItems.length > 0) {
-                olItems[olItems.length - 1].content += currentOlContent;
             }
             flushOl();
             return result.join('\n');
         })(text);
 
-        // Unordered lists (- item or * item) — only standalone blocks not already inside OL
-        text = text.replace(/^(\s*[-*] .+(\n|$))+/gm, function (block) {
+        // Unordered lists (- item or * item or • item) — standalone blocks not inside OL
+        text = text.replace(/^(\s*[-*•] .+(\n|$))+/gm, function (block) {
             var items = block.trim().split('\n');
             var html = '<ul class="md-list">';
             for (var li = 0; li < items.length; li++) {
-                html += '<li>' + items[li].replace(/^\s*[-*] /, '') + '</li>';
+                html += '<li>' + items[li].replace(/^\s*[-*•] /, '') + '</li>';
             }
             html += '</ul>';
             return html;

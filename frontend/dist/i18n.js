@@ -137,7 +137,7 @@
             'chat_source_image': '📷 图片来源',
             'chat_source_download': '点击下载文档',
             'chat_media_seek_hint': '点击跳转到该时间点',
-            'chat_not_satisfied': '不太满意',
+            'chat_not_satisfied': '建议补充资料',
             'chat_not_satisfied_confirm': '确认将此问题转为待回答问题？',
             'chat_not_satisfied_confirm_yes': '确认',
             'chat_not_satisfied_confirm_no': '取消',
