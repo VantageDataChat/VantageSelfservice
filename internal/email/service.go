@@ -106,6 +106,7 @@ func (s *Service) SendVerification(toEmail, userName, verifyURL string) error {
 	msg := buildMessage(fromName, fromAddr, toEmail, subject, body)
 	return s.send(cfg, fromAddr, toEmail, msg)
 }
+
 // SendPasswordReset sends a password reset link to the user.
 func (s *Service) SendPasswordReset(toEmail, userName, resetURL string) error {
 	cfg := s.cfg()

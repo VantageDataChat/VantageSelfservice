@@ -205,13 +205,7 @@ func HandleRegister(app *App) http.HandlerFunc {
 			WriteError(w, http.StatusBadRequest, "验证码错误")
 			return
 		}
-		baseURL := "http://" + r.Host
-		if r.TLS != nil {
-			baseURL = "https://" + r.Host
-		}
-		if fwd := r.Header.Get("X-Forwarded-Proto"); fwd == "https" || fwd == "http" {
-			baseURL = fwd + "://" + r.Host
-		}
+		baseURL := GetBaseURL(r)
 		if err := app.Register(req.RegisterRequest, baseURL); err != nil {
 			WriteError(w, http.StatusBadRequest, err.Error())
 			return
@@ -320,13 +314,7 @@ func HandleForgotPassword(app *App) http.HandlerFunc {
 			WriteError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
-		baseURL := "http://" + r.Host
-		if r.TLS != nil {
-			baseURL = "https://" + r.Host
-		}
-		if fwd := r.Header.Get("X-Forwarded-Proto"); fwd == "https" || fwd == "http" {
-			baseURL = fwd + "://" + r.Host
-		}
+		baseURL := GetBaseURL(r)
 		if err := app.RequestPasswordReset(req.Email, baseURL); err != nil {
 			WriteError(w, http.StatusBadRequest, err.Error())
 			return

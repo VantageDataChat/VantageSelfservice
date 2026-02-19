@@ -576,14 +576,29 @@ func (a *App) RequestPasswordReset(emailAddr, baseURL string) error {
 	if emailAddr == "" {
 		return fmt.Errorf("请输入邮箱地址")
 	}
+	if !strings.Contains(emailAddr, "@") || !strings.Contains(emailAddr, ".") || len(emailAddr) > 254 {
+		return fmt.Errorf("邮箱格式不正确")
+	}
 
 	var userID, name string
-	err := a.readDB.QueryRow(
-		`SELECT id, COALESCE(name,'') FROM users WHERE email = ? AND provider = 'local'`,
+	var emailVerified int
+	err := a.db.QueryRow(
+		`SELECT id, COALESCE(name,''), email_verified FROM users WHERE email = ? AND provider = 'local'`,
 		emailAddr,
-	).Scan(&userID, &name)
-	if err != nil {
-		// Don't reveal whether the email exists
+	).Scan(&userID, &name, &emailVerified)
+	if err != nil || emailVerified == 0 {
+		// Don't reveal whether the email exists or is unverified
+		return nil
+	}
+
+	// Throttle: if a reset token was created less than 60s ago, skip
+	var recentCount int
+	_ = a.db.QueryRow(
+		`SELECT COUNT(*) FROM email_tokens WHERE user_id = ? AND type = 'password_reset' AND created_at > ?`,
+		userID, time.Now().UTC().Add(-60*time.Second).Format(time.RFC3339),
+	).Scan(&recentCount)
+	if recentCount > 0 {
+		// Silently succeed to avoid revealing timing info
 		return nil
 	}
 
@@ -660,8 +675,8 @@ func (a *App) ResetPassword(token, newPassword string) error {
 		return fmt.Errorf("更新密码失败: %w", err)
 	}
 
-	// Delete used token and invalidate all sessions
-	a.db.Exec(`DELETE FROM email_tokens WHERE token = ?`, token)
+	// Delete all password reset tokens for this user and invalidate all sessions
+	a.db.Exec(`DELETE FROM email_tokens WHERE user_id = ? AND type = 'password_reset'`, userID)
 	_ = a.sessionManager.DeleteSessionsByUserID(userID)
 
 	return nil

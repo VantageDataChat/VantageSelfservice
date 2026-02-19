@@ -363,7 +363,8 @@
         // This is called when the /reset-password page loads
         var params = new URLSearchParams(window.location.search);
         var token = params.get('token');
-        if (!token) {
+        var valid = token && /^[0-9a-f]{32}$/.test(token);
+        if (!valid) {
             var errorEl = document.getElementById('reset-password-error');
             if (errorEl) { errorEl.textContent = i18n.t('reset_invalid_link'); errorEl.classList.remove('hidden'); }
             var form = document.getElementById('reset-password-form');
@@ -408,7 +409,13 @@
         })
         .then(function (data) {
             if (successEl) {
-                successEl.innerHTML = (data.message || i18n.t('reset_success')) + ' <a href="/login">' + i18n.t('reset_go_login') + '</a>';
+                successEl.textContent = '';
+                var msgText = document.createTextNode((data.message || i18n.t('reset_success')) + ' ');
+                var link = document.createElement('a');
+                link.href = '/login';
+                link.textContent = i18n.t('reset_go_login');
+                successEl.appendChild(msgText);
+                successEl.appendChild(link);
                 successEl.classList.remove('hidden');
             }
             if (errorEl) errorEl.classList.add('hidden');

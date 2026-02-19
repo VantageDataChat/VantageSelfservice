@@ -8,6 +8,18 @@ import (
 	"strings"
 )
 
+// GetBaseURL derives the public base URL from the request, respecting
+// X-Forwarded-Proto for reverse-proxy setups.
+func GetBaseURL(r *http.Request) string {
+	baseURL := "http://" + r.Host
+	if r.TLS != nil {
+		baseURL = "https://" + r.Host
+	}
+	if fwd := r.Header.Get("X-Forwarded-Proto"); fwd == "https" || fwd == "http" {
+		baseURL = fwd + "://" + r.Host
+	}
+	return baseURL
+}
 // WriteJSON encodes data as JSON and writes it to the response with the given status code.
 func WriteJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
