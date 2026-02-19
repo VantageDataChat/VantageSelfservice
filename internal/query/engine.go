@@ -135,7 +135,8 @@ type QueryEngine struct {
 	embeddingService embedding.EmbeddingService
 	vectorStore      vectorstore.VectorStore
 	llmService       llm.LLMService
-	db               *sql.DB
+	db               *sql.DB // writeDB for mutations
+	readDB           *sql.DB // readDB for read-only queries
 	config           *config.Config
 	embedCache       *embeddingCache // caches embedding API results to avoid redundant calls
 }
@@ -145,14 +146,16 @@ func NewQueryEngine(
 	embeddingService embedding.EmbeddingService,
 	vectorStore vectorstore.VectorStore,
 	llmService llm.LLMService,
-	db *sql.DB,
+	writeDB *sql.DB,
+	readDB *sql.DB,
 	cfg *config.Config,
 ) *QueryEngine {
 	return &QueryEngine{
 		embeddingService: embeddingService,
 		vectorStore:      vectorStore,
 		llmService:       llmService,
-		db:               db,
+		db:               writeDB,
+		readDB:           readDB,
 		config:           cfg,
 		embedCache:       newEmbeddingCache(512, 10*time.Minute),
 	}
@@ -294,7 +297,7 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 	skipIntentClassification := req.ImageData != ""
 	if !skipIntentClassification && req.ProductID != "" {
 		var pType string
-		err := qe.db.QueryRow("SELECT COALESCE(type, 'service') FROM products WHERE id = ?", req.ProductID).Scan(&pType)
+		err := qe.readDB.QueryRow("SELECT COALESCE(type, 'service') FROM products WHERE id = ?", req.ProductID).Scan(&pType)
 		if err == nil && pType == "knowledge_base" {
 			skipIntentClassification = true
 			if debugMode {
@@ -719,7 +722,7 @@ func (qe *QueryEngine) findDocumentImages(results []vectorstore.SearchResult) []
 
 	query := `SELECT document_id, image_url, chunk_text FROM chunks WHERE document_id IN (` +
 		strings.Join(placeholders, ",") + `) AND image_url != '' AND image_url IS NOT NULL`
-	rows, err := qe.db.Query(query, args...)
+	rows, err := qe.readDB.Query(query, args...)
 	if err != nil {
 		return nil
 	}
@@ -755,7 +758,7 @@ func (qe *QueryEngine) findCachedAnswer(documentID string) string {
 	}
 	questionID := strings.TrimPrefix(documentID, "pending-answer-")
 	var llmAnswer sql.NullString
-	err := qe.db.QueryRow(
+	err := qe.readDB.QueryRow(
 		`SELECT llm_answer FROM pending_questions WHERE id = ? AND status = 'answered'`,
 		questionID,
 	).Scan(&llmAnswer)
@@ -770,7 +773,7 @@ func (qe *QueryEngine) findCachedAnswer(documentID string) string {
 // to avoid unnecessary embedding API calls.
 // Returns the existing question text if found, empty string otherwise.
 func (qe *QueryEngine) findSimilarPendingQuestion(question string, queryVector []float64) string {
-	rows, err := qe.db.Query(
+	rows, err := qe.readDB.Query(
 		`SELECT question FROM pending_questions WHERE status = 'pending' ORDER BY created_at DESC LIMIT 50`,
 	)
 	if err != nil {
@@ -785,6 +788,10 @@ func (qe *QueryEngine) findSimilarPendingQuestion(question string, queryVector [
 			continue
 		}
 		pendingQuestions = append(pendingQuestions, q)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[Query] error iterating pending questions: %v", err)
+		return ""
 	}
 	if len(pendingQuestions) == 0 {
 		return ""
@@ -923,7 +930,7 @@ func mergeSearchResults(a, b []vectorstore.SearchResult, topK int) []vectorstore
 // for search results that correspond to video content.
 // Uses a single batch query instead of per-result queries for better performance.
 func (qe *QueryEngine) enrichVideoTimeInfo(results []vectorstore.SearchResult) []vectorstore.SearchResult {
-	if qe.db == nil || len(results) == 0 {
+	if qe.readDB == nil || len(results) == 0 {
 		return results
 	}
 
@@ -945,7 +952,7 @@ func (qe *QueryEngine) enrichVideoTimeInfo(results []vectorstore.SearchResult) [
 	}
 
 	query := `SELECT chunk_id, start_time, end_time FROM video_segments WHERE chunk_id IN (` + strings.Join(placeholders, ",") + `)`
-	rows, err := qe.db.Query(query, args...)
+	rows, err := qe.readDB.Query(query, args...)
 	if err != nil {
 		return results
 	}
@@ -971,7 +978,7 @@ func (qe *QueryEngine) enrichVideoTimeInfo(results []vectorstore.SearchResult) [
 // Returns a map from document_id to document type (e.g., "video", "pdf", "word").
 func (qe *QueryEngine) lookupDocumentTypes(docIDs []string) map[string]string {
 	result := make(map[string]string)
-	if qe.db == nil || len(docIDs) == 0 {
+	if qe.readDB == nil || len(docIDs) == 0 {
 		return result
 	}
 	// Deduplicate
@@ -990,7 +997,7 @@ func (qe *QueryEngine) lookupDocumentTypes(docIDs []string) map[string]string {
 		args[i] = id
 	}
 	q := `SELECT id, type FROM documents WHERE id IN (` + strings.Join(placeholders, ",") + `)`
-	rows, err := qe.db.Query(q, args...)
+	rows, err := qe.readDB.Query(q, args...)
 	if err != nil {
 		return result
 	}

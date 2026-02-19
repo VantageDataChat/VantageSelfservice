@@ -135,14 +135,18 @@ func (as *AppService) Initialize(dataDir string, overrideBind string, overridePo
 	}
 
 	as.productService = product.NewProductService(readDB, writeDB)
-	as.queryEngine = query.NewQueryEngine(es, vs, ls, writeDB, as.cfg)
+	as.queryEngine = query.NewQueryEngine(es, vs, ls, writeDB, readDB, as.cfg)
 	as.pendingManager = pending.NewPendingQuestionManager(writeDB, tc, es, vs, ls)
 	as.oauthClient = auth.NewOAuthClient(as.cfg.OAuth.Providers)
 	as.sessionManager = auth.NewSessionManager(readDB, writeDB, 24*time.Hour)
 
 	// Create email service
 	as.emailService = email.NewService(func() config.SMTPConfig {
-		return as.configManager.Get().SMTP
+		cfg := as.configManager.Get()
+		if cfg == nil {
+			return config.SMTPConfig{}
+		}
+		return cfg.SMTP
 	})
 
 	// 5. Create HTTP server

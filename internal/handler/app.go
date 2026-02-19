@@ -217,7 +217,11 @@ func (a *App) RefreshOAuthClient() {
 	if cfg == nil {
 		return
 	}
+	old := a.oauthClient
 	a.oauthClient = auth.NewOAuthClient(cfg.OAuth.Providers)
+	if old != nil {
+		old.Stop()
+	}
 }
 
 // DeleteOAuthProvider removes an OAuth provider from the config.

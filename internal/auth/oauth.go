@@ -44,6 +44,8 @@ type OAuthClient struct {
 	// Maps state string -> expiry time.
 	stateMu      sync.Mutex
 	pendingStates map[string]time.Time
+	// stopCh signals the background cleanup goroutine to exit.
+	stopCh chan struct{}
 }
 
 // OAuthUser represents a user authenticated via OAuth.
@@ -72,6 +74,7 @@ func NewOAuthClient(providers map[string]config.OAuthProviderConfig) *OAuthClien
 	oc := &OAuthClient{
 		providers:     configs,
 		pendingStates: make(map[string]time.Time),
+		stopCh:        make(chan struct{}),
 	}
 	// Background cleanup of expired states
 	go func() {
@@ -82,8 +85,13 @@ func NewOAuthClient(providers map[string]config.OAuthProviderConfig) *OAuthClien
 		}()
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
-		for range ticker.C {
-			oc.cleanExpiredStates()
+		for {
+			select {
+			case <-ticker.C:
+				oc.cleanExpiredStates()
+			case <-oc.stopCh:
+				return
+			}
 		}
 	}()
 	return oc
@@ -98,6 +106,17 @@ func (oc *OAuthClient) cleanExpiredStates() {
 		if now.After(expiry) {
 			delete(oc.pendingStates, state)
 		}
+	}
+}
+
+// Stop terminates the background state cleanup goroutine.
+// Must be called before discarding an OAuthClient to prevent goroutine leaks.
+func (oc *OAuthClient) Stop() {
+	select {
+	case <-oc.stopCh:
+		// already closed
+	default:
+		close(oc.stopCh)
 	}
 }
 
