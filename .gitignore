@@ -22,3 +22,9 @@ internal/document/data/uploads/
 
 # Server credentials (sensitive information)
 server.md
+
+# Test files
+test.pdf
+test.pptx
+test.docx
+test.xlsx
