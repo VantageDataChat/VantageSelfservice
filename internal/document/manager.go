@@ -276,6 +276,7 @@ func (dm *DocumentManager) ocrImageViaLLM(imgData []byte) (string, error) {
 	}
 	return strings.TrimSpace(text), nil
 }
+
 // detectImageMIME returns the MIME type based on image magic bytes.
 func detectImageMIME(data []byte) string {
 	if len(data) >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF {
@@ -589,14 +590,23 @@ func (dm *DocumentManager) processFile(docID, docName string, fileData []byte, f
 			return stats, nil
 		}
 
-		// Phase 2: Batch embed all slide texts
+		// Phase 2: Batch embed all slide texts (respecting API batch size limit)
 		texts := make([]string, len(slides))
 		for i, s := range slides {
 			texts[i] = s.text
 		}
-		vectors, embErr := dm.embeddingService.EmbedBatch(texts)
-		if embErr != nil {
-			return nil, fmt.Errorf("PPT slide embedding error: %w", embErr)
+		const batchSize = 64
+		vectors := make([][]float64, len(texts))
+		for start := 0; start < len(texts); start += batchSize {
+			end := start + batchSize
+			if end > len(texts) {
+				end = len(texts)
+			}
+			batch, embErr := dm.embeddingService.EmbedBatch(texts[start:end])
+			if embErr != nil {
+				return nil, fmt.Errorf("PPT slide embedding error (batch %d-%d): %w", start, end, embErr)
+			}
+			copy(vectors[start:end], batch)
 		}
 
 		// Phase 3: Store each slide chunk with its image URL
