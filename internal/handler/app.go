@@ -268,25 +268,8 @@ func (a *App) AdminSetup(username, password string) (*AdminLoginResponse, error)
 	if len(username) < 3 {
 		return nil, fmt.Errorf("用户名至少3位")
 	}
-	if len(password) < 8 {
-		return nil, fmt.Errorf("密码至少8位")
-	}
-	if len(password) > 72 {
-		return nil, fmt.Errorf("密码不能超过72位")
-	}
-	// Password complexity: require at least one letter and one digit
-	hasLetter := false
-	hasDigit := false
-	for _, c := range password {
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
-			hasLetter = true
-		}
-		if c >= '0' && c <= '9' {
-			hasDigit = true
-		}
-	}
-	if !hasLetter || !hasDigit {
-		return nil, fmt.Errorf("密码必须包含字母和数字")
+	if msg := ValidatePassword(password); msg != "" {
+		return nil, fmt.Errorf(msg)
 	}
 	if len(username) > 64 {
 		return nil, fmt.Errorf("用户名不能超过64位")
@@ -472,25 +455,8 @@ func (a *App) Register(req RegisterRequest, baseURL string) error {
 	if !strings.Contains(email, "@") || !strings.Contains(email, ".") || len(email) > 254 {
 		return fmt.Errorf("邮箱格式不正确")
 	}
-	if len(password) < 8 {
-		return fmt.Errorf("密码至少8位")
-	}
-	if len(password) > 72 {
-		return fmt.Errorf("密码不能超过72位")
-	}
-	// Password complexity: require at least one letter and one digit
-	hasLetter := false
-	hasDigit := false
-	for _, c := range password {
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
-			hasLetter = true
-		}
-		if c >= '0' && c <= '9' {
-			hasDigit = true
-		}
-	}
-	if !hasLetter || !hasDigit {
-		return fmt.Errorf("密码必须包含字母和数字")
+	if msg := ValidatePassword(password); msg != "" {
+		return fmt.Errorf(msg)
 	}
 	if len(name) > 200 {
 		return fmt.Errorf("名称过长")
@@ -915,25 +881,8 @@ func (a *App) CreateAdminUser(username, password, role string, permissions []str
 	if len(username) > 64 {
 		return nil, fmt.Errorf("用户名不能超过64位")
 	}
-	if len(password) < 8 {
-		return nil, fmt.Errorf("密码至少8位")
-	}
-	if len(password) > 72 {
-		return nil, fmt.Errorf("密码不能超过72位")
-	}
-	// Password complexity: require at least one letter and one digit
-	hasLetter := false
-	hasDigit := false
-	for _, c := range password {
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
-			hasLetter = true
-		}
-		if c >= '0' && c <= '9' {
-			hasDigit = true
-		}
-	}
-	if !hasLetter || !hasDigit {
-		return nil, fmt.Errorf("密码必须包含字母和数字")
+	if msg := ValidatePassword(password); msg != "" {
+		return nil, fmt.Errorf(msg)
 	}
 	if role != "editor" && role != "super_admin" {
 		role = "editor"
@@ -1327,11 +1276,14 @@ func (a *App) ListCustomersPaged(page, pageSize int, search string) (*CustomerLi
 		pageSize = 20
 	}
 
-	// Build WHERE clause
+	// Build WHERE clause (use table-qualified column names for JOIN compatibility)
 	baseWhere := `provider != 'admin_sub' AND id != 'admin'`
+	// For JOIN queries, we need table-qualified names to avoid ambiguity with login_bans.id
+	joinWhere := `u.provider != 'admin_sub' AND u.id != 'admin'`
 	var args []interface{}
 	if search != "" {
 		baseWhere += ` AND COALESCE(email, '') LIKE ?`
+		joinWhere += ` AND COALESCE(u.email, '') LIKE ?`
 		args = append(args, "%"+search+"%")
 	}
 
@@ -1351,7 +1303,7 @@ func (a *App) ListCustomersPaged(page, pageSize int, search string) (*CustomerLi
 			COALESCE(b.reason, ''), COALESCE(b.unlocks_at, '')
 		FROM users u
 		LEFT JOIN login_bans b ON (b.username = COALESCE(u.email, '') OR b.username = u.id) AND b.unlocks_at > ?
-		WHERE u.`+baseWhere+`
+		WHERE `+joinWhere+`
 		ORDER BY u.created_at DESC
 		LIMIT ? OFFSET ?
 	`, queryArgs...)

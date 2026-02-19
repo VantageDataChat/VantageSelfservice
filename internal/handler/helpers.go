@@ -158,3 +158,28 @@ func DetectFileType(filename string) string {
 		return "unknown"
 	}
 }
+
+// ValidatePassword checks password length and complexity requirements.
+// Returns an error message if validation fails, or empty string if valid.
+func ValidatePassword(password string) string {
+	if len(password) < 8 {
+		return "密码至少8位"
+	}
+	if len(password) > 72 {
+		return "密码不能超过72位"
+	}
+	hasLetter := false
+	hasDigit := false
+	for _, c := range password {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+			hasLetter = true
+		}
+		if c >= '0' && c <= '9' {
+			hasDigit = true
+		}
+	}
+	if !hasLetter || !hasDigit {
+		return "密码必须包含字母和数字"
+	}
+	return ""
+}

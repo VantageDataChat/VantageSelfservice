@@ -274,7 +274,11 @@ func HandleTranslateProductName(app *App) http.HandlerFunc {
 		ch := make(chan result, 1)
 		go func() {
 			translated, err := app.queryEngine.TranslateText(name, lang)
-			ch <- result{translated, err}
+			select {
+			case ch <- result{translated, err}:
+			case <-llmCtx.Done():
+				// Context cancelled, discard result
+			}
 		}()
 		select {
 		case res := <-ch:

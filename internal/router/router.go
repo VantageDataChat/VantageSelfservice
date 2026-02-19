@@ -114,6 +114,7 @@ func Register(app *handler.App) {
 	// ── Video ──
 	http.HandleFunc("/api/video/check-deps", secure(handler.HandleVideoCheckDeps(app)))
 	http.HandleFunc("/api/video/validate-rapidspeech", secure(handler.HandleValidateRapidSpeech(app)))
+	http.HandleFunc("/api/video/auto-setup/check", secure(handler.HandleVideoAutoSetupCheck(app)))
 	http.HandleFunc("/api/video/auto-setup", secure(handler.HandleVideoAutoSetup(app)))
 
 	// ── Admin sub-accounts ──

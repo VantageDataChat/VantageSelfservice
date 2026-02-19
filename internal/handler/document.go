@@ -450,6 +450,20 @@ func HandleBatchImport(app *App) http.HandlerFunc {
 		var failedFiles []failedItem
 
 		for i, filePath := range files {
+			// Check if client disconnected before processing next file
+			select {
+			case <-r.Context().Done():
+				sendSSE("done", map[string]interface{}{
+					"total":        len(files),
+					"success":      success,
+					"failed":       failed,
+					"failed_files": failedFiles,
+					"cancelled":    true,
+				})
+				return
+			default:
+			}
+
 			fileName := filepath.Base(filePath)
 			ext := strings.ToLower(filepath.Ext(fileName))
 			fileType := SupportedExtensions[ext]

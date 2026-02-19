@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 
+	"time"
+
 	"askflow/internal/cli"
 	"askflow/internal/handler"
 	"askflow/internal/router"
@@ -168,7 +170,7 @@ func runCLICommand(dataDir string, fn func(*service.AppService)) {
 	if err := appSvc.Initialize(dataDir, "", 0); err != nil {
 		log.Fatalf("Failed to initialize application: %v", err)
 	}
-	defer appSvc.GetDatabase().Close()
+	defer appSvc.Shutdown(5 * time.Second)
 	fn(appSvc)
 }
 

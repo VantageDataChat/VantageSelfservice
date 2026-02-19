@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,6 +17,26 @@ import (
 
 	"askflow/internal/video"
 )
+
+// verifySudoPassword checks if the given password is valid for sudo by running
+// a harmless "sudo -S true" command. Returns nil if the password is correct.
+func verifySudoPassword(password string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sudo", "-S", "-k", "true")
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create stdin pipe: %w", err)
+	}
+	go func() {
+		defer stdinPipe.Close()
+		io.WriteString(stdinPipe, password+"\n")
+	}()
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("sudo authentication failed: %w", err)
+	}
+	return nil
+}
 
 // --- Video dependency check / auto-setup handlers ---
 
@@ -75,9 +96,45 @@ func HandleValidateRapidSpeech(app *App) http.HandlerFunc {
 	}
 }
 
+// HandleVideoAutoSetupCheck returns whether the service is running as root.
+// The frontend uses this to decide whether to show a password prompt.
+func HandleVideoAutoSetupCheck(app *App) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		_, role, err := GetAdminSession(app, r)
+		if err != nil {
+			WriteError(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		if role != "super_admin" {
+			WriteError(w, http.StatusForbidden, "仅超级管理员可执行自动配置")
+			return
+		}
+		if runtime.GOOS != "linux" {
+			WriteJSON(w, http.StatusOK, map[string]interface{}{
+				"supported": false,
+				"is_root":   false,
+				"message":   "auto-setup is only supported on Linux",
+			})
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]interface{}{
+			"supported": true,
+			"is_root":   os.Getuid() == 0,
+		})
+	}
+}
+
 // HandleVideoAutoSetup performs automatic installation of FFmpeg and RapidSpeech.
 // It streams progress via Server-Sent Events (SSE).
 // Steps: install system deps (git/gcc/cmake) → install ffmpeg → clone & build RapidSpeech → download model → configure paths.
+//
+// When the service is NOT running as root, the request body may include a
+// "root_password" field. The handler will use "sudo -S" to inject the password
+// and elevate privileges for commands that require root (apt-get, etc.).
 func HandleVideoAutoSetup(app *App) http.HandlerFunc {
 	var setupRunning int32 // atomic guard: 0 = idle, 1 = running
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -100,10 +157,30 @@ func HandleVideoAutoSetup(app *App) http.HandlerFunc {
 			return
 		}
 
-		// Check if running as root (required for apt-get install)
-		if os.Getuid() != 0 {
-			WriteError(w, http.StatusForbidden, "自动配置需要以管理员权限（root）运行服务，请使用 sudo 启动程序后重试")
+		// Read optional root_password from request body
+		var reqBody struct {
+			RootPassword string `json:"root_password"`
+		}
+		// ReadJSONBody closes the body, so we only attempt if Content-Type is JSON
+		if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+			ReadJSONBody(r, &reqBody)
+		}
+
+		isRoot := os.Getuid() == 0
+		sudoPassword := reqBody.RootPassword
+
+		// If not root and no password provided, reject
+		if !isRoot && sudoPassword == "" {
+			WriteError(w, http.StatusForbidden, "当前服务未以 root 运行，请提供管理员密码以继续自动配置")
 			return
+		}
+
+		// If not root, verify the sudo password before starting the long setup
+		if !isRoot && sudoPassword != "" {
+			if err := verifySudoPassword(sudoPassword); err != nil {
+				WriteError(w, http.StatusForbidden, "管理员密码验证失败，请检查密码是否正确")
+				return
+			}
 		}
 
 		// Prevent concurrent auto-setup runs
@@ -140,10 +217,32 @@ func HandleVideoAutoSetup(app *App) http.HandlerFunc {
 			flusher.Flush()
 		}
 
-		// Helper: run a shell command, stream output lines via SSE
-		runCmd := func(ctx context.Context, name string, args ...string) error {
-			cmd := exec.CommandContext(ctx, name, args...)
+		// Helper: run a shell command, stream output lines via SSE.
+		// When useSudo is true and the service is not root, the command is
+		// wrapped with "sudo -S" and the password is piped via stdin.
+		runCmd := func(ctx context.Context, useSudo bool, name string, args ...string) error {
+			var cmd *exec.Cmd
+			if useSudo && !isRoot {
+				// Build: sudo -S <name> <args...>
+				sudoArgs := append([]string{"-S", name}, args...)
+				cmd = exec.CommandContext(ctx, "sudo", sudoArgs...)
+			} else {
+				cmd = exec.CommandContext(ctx, name, args...)
+			}
 			cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
+
+			// If using sudo, pipe the password via stdin
+			if useSudo && !isRoot {
+				stdinPipe, err := cmd.StdinPipe()
+				if err != nil {
+					return err
+				}
+				go func() {
+					defer stdinPipe.Close()
+					io.WriteString(stdinPipe, sudoPassword+"\n")
+				}()
+			}
+
 			stdout, err := cmd.StdoutPipe()
 			if err != nil {
 				return err
@@ -162,6 +261,10 @@ func HandleVideoAutoSetup(app *App) http.HandlerFunc {
 				default:
 				}
 				line := scanner.Text()
+				// Filter out sudo password prompt echoes
+				if strings.Contains(line, "[sudo]") || strings.Contains(line, "password for") {
+					continue
+				}
 				if len(line) > 500 {
 					line = line[:500] + "..."
 				}
@@ -199,12 +302,12 @@ func HandleVideoAutoSetup(app *App) http.HandlerFunc {
 
 		// ── Step 1: Install system dependencies ──
 		sendSSE("step", "正在安装系统依赖 (git, gcc, g++, cmake, make)...", 5)
-		if err := runCmd(ctx, "apt-get", "update", "-y"); err != nil {
+		if err := runCmd(ctx, true, "apt-get", "update", "-y"); err != nil {
 			sendSSE("error", fmt.Sprintf("apt-get update 失败: %v", err), -1)
 			sendSSE("done", "安装失败", -1)
 			return
 		}
-		if err := runCmd(ctx, "apt-get", "install", "-y",
+		if err := runCmd(ctx, true, "apt-get", "install", "-y",
 			"git", "gcc", "g++", "cmake", "make", "wget", "curl",
 			"pkg-config", "libssl-dev"); err != nil {
 			sendSSE("error", fmt.Sprintf("安装系统依赖失败: %v", err), -1)
@@ -215,7 +318,7 @@ func HandleVideoAutoSetup(app *App) http.HandlerFunc {
 
 		// ── Step 2: Install FFmpeg ──
 		sendSSE("step", "正在安装 FFmpeg...", 20)
-		if err := runCmd(ctx, "apt-get", "install", "-y", "ffmpeg"); err != nil {
+		if err := runCmd(ctx, true, "apt-get", "install", "-y", "ffmpeg"); err != nil {
 			sendSSE("error", fmt.Sprintf("FFmpeg 安装失败: %v", err), -1)
 			sendSSE("done", "安装失败", -1)
 			return
@@ -251,22 +354,22 @@ func HandleVideoAutoSetup(app *App) http.HandlerFunc {
 
 		if info, err := os.Stat(repoDir); err == nil && info.IsDir() {
 			sendSSE("log", "仓库目录已存在，执行 git pull...", -1)
-			if err := runCmd(ctx, "git", "-C", repoDir, "pull"); err != nil {
+			if err := runCmd(ctx, false, "git", "-C", repoDir, "pull"); err != nil {
 				sendSSE("log", "git pull 失败，将重新克隆...", -1)
 				os.RemoveAll(repoDir)
-				if err := runCmd(ctx, "git", "clone", "--depth=1", repoURL, repoDir); err != nil {
+				if err := runCmd(ctx, false, "git", "clone", "--depth=1", repoURL, repoDir); err != nil {
 					sendSSE("error", fmt.Sprintf("克隆仓库失败: %v", err), -1)
 					sendSSE("done", "安装失败", -1)
 					return
 				}
 			}
 		} else {
-			if err := runCmd(ctx, "git", "clone", "--depth=1", repoURL, repoDir); err != nil {
+			if err := runCmd(ctx, false, "git", "clone", "--depth=1", repoURL, repoDir); err != nil {
 				// If gitee failed, try github
 				if isChinaRegion {
 					sendSSE("log", "Gitee 克隆失败，尝试 GitHub...", -1)
 					repoURL = "https://github.com/RapidAI/RapidSpeech.cpp"
-					if err := runCmd(ctx, "git", "clone", "--depth=1", repoURL, repoDir); err != nil {
+					if err := runCmd(ctx, false, "git", "clone", "--depth=1", repoURL, repoDir); err != nil {
 						sendSSE("error", fmt.Sprintf("克隆仓库失败: %v", err), -1)
 						sendSSE("done", "安装失败", -1)
 						return
@@ -282,8 +385,8 @@ func HandleVideoAutoSetup(app *App) http.HandlerFunc {
 
 		// Init submodules
 		sendSSE("step", "正在初始化子模块...", 48)
-		runCmd(ctx, "git", "-C", repoDir, "submodule", "sync")
-		if err := runCmd(ctx, "git", "-C", repoDir, "submodule", "update", "--init", "--recursive"); err != nil {
+		runCmd(ctx, false, "git", "-C", repoDir, "submodule", "sync")
+		if err := runCmd(ctx, false, "git", "-C", repoDir, "submodule", "update", "--init", "--recursive"); err != nil {
 			sendSSE("error", fmt.Sprintf("子模块初始化失败: %v", err), -1)
 			sendSSE("done", "安装失败", -1)
 			return
@@ -298,7 +401,7 @@ func HandleVideoAutoSetup(app *App) http.HandlerFunc {
 			sendSSE("done", "安装失败", -1)
 			return
 		}
-		if err := runCmd(ctx, "cmake", "-B", buildDir, "-S", repoDir, "-DCMAKE_BUILD_TYPE=Release"); err != nil {
+		if err := runCmd(ctx, false, "cmake", "-B", buildDir, "-S", repoDir, "-DCMAKE_BUILD_TYPE=Release"); err != nil {
 			sendSSE("error", fmt.Sprintf("cmake 配置失败: %v", err), -1)
 			sendSSE("done", "安装失败", -1)
 			return
@@ -308,7 +411,7 @@ func HandleVideoAutoSetup(app *App) http.HandlerFunc {
 		if numCPU < 1 {
 			numCPU = 1
 		}
-		if err := runCmd(ctx, "cmake", "--build", buildDir, "--config", "Release",
+		if err := runCmd(ctx, false, "cmake", "--build", buildDir, "--config", "Release",
 			fmt.Sprintf("-j%d", numCPU)); err != nil {
 			sendSSE("error", fmt.Sprintf("编译失败: %v", err), -1)
 			sendSSE("done", "安装失败", -1)
@@ -348,7 +451,7 @@ func HandleVideoAutoSetup(app *App) http.HandlerFunc {
 				modelURL = "https://huggingface.co/RapidAI/RapidSpeech/resolve/main/ASR/SenseVoice/sense-voice-small-q5_k.gguf"
 				sendSSE("log", "使用 Hugging Face 下载模型...", -1)
 			}
-			if err := runCmd(ctx, "wget", "--progress=dot:mega", "-O", modelFile, modelURL); err != nil {
+			if err := runCmd(ctx, false, "wget", "--progress=dot:mega", "-O", modelFile, modelURL); err != nil {
 				// Fallback to the other source
 				if isChinaRegion {
 					sendSSE("log", "ModelScope 下载失败，尝试 Hugging Face...", -1)
@@ -358,7 +461,7 @@ func HandleVideoAutoSetup(app *App) http.HandlerFunc {
 					modelURL = "https://www.modelscope.cn/models/RapidAI/RapidSpeech/resolve/master/ASR/SenseVoice/sense-voice-small-q5_k.gguf"
 				}
 				os.Remove(modelFile) // remove partial download
-				if err := runCmd(ctx, "wget", "--progress=dot:mega", "-O", modelFile, modelURL); err != nil {
+				if err := runCmd(ctx, false, "wget", "--progress=dot:mega", "-O", modelFile, modelURL); err != nil {
 					sendSSE("error", fmt.Sprintf("模型下载失败: %v", err), -1)
 					sendSSE("done", "安装失败", -1)
 					return
