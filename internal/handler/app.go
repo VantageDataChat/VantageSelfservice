@@ -581,21 +581,20 @@ func (a *App) RequestPasswordReset(emailAddr, baseURL string) error {
 	}
 
 	var userID, name string
-	var emailVerified int
 	err := a.db.QueryRow(
-		`SELECT id, COALESCE(name,''), email_verified FROM users WHERE email = ? AND provider = 'local'`,
+		`SELECT id, COALESCE(name,'') FROM users WHERE email = ?`,
 		emailAddr,
-	).Scan(&userID, &name, &emailVerified)
-	if err != nil || emailVerified == 0 {
-		// Don't reveal whether the email exists or is unverified
+	).Scan(&userID, &name)
+	if err != nil {
+		// Don't reveal whether the email exists
 		return nil
 	}
 
 	// Throttle: if a reset token was created less than 60s ago, skip
 	var recentCount int
 	_ = a.db.QueryRow(
-		`SELECT COUNT(*) FROM email_tokens WHERE user_id = ? AND type = 'password_reset' AND created_at > ?`,
-		userID, time.Now().UTC().Add(-60*time.Second).Format(time.RFC3339),
+		`SELECT COUNT(*) FROM email_tokens WHERE user_id = ? AND type = 'password_reset' AND created_at > datetime('now', '-60 seconds')`,
+		userID,
 	).Scan(&recentCount)
 	if recentCount > 0 {
 		// Silently succeed to avoid revealing timing info
@@ -670,7 +669,7 @@ func (a *App) ResetPassword(token, newPassword string) error {
 		return fmt.Errorf("密码加密失败: %w", err)
 	}
 
-	_, err = a.db.Exec(`UPDATE users SET password_hash = ? WHERE id = ?`, hash, userID)
+	_, err = a.db.Exec(`UPDATE users SET password_hash = ?, email_verified = 1 WHERE id = ?`, hash, userID)
 	if err != nil {
 		return fmt.Errorf("更新密码失败: %w", err)
 	}
@@ -698,6 +697,7 @@ type UserInfo struct {
 }
 
 // UserLogin authenticates a user with email and password.
+// Supports both local-registered users and SN users who have set a password via reset.
 func (a *App) UserLogin(email, password, ip string) (*UserLoginResponse, error) {
 	email = strings.TrimSpace(email)
 	if email == "" || password == "" {
@@ -709,12 +709,13 @@ func (a *App) UserLogin(email, password, ip string) (*UserLoginResponse, error) 
 		return nil, err
 	}
 
-	var userID, name, passwordHash string
+	var userID, name, passwordHash, provider string
 	var emailVerified int
 	err := a.readDB.QueryRow(
-		`SELECT id, name, password_hash, email_verified FROM users WHERE email = ? AND provider = 'local'`,
+		`SELECT id, name, password_hash, email_verified, provider FROM users
+		 WHERE email = ? AND password_hash IS NOT NULL AND password_hash != ''`,
 		email,
-	).Scan(&userID, &name, &passwordHash, &emailVerified)
+	).Scan(&userID, &name, &passwordHash, &emailVerified, &provider)
 	if err == sql.ErrNoRows {
 		a.loginLimiter.RecordAttempt(email, ip, false)
 		return nil, fmt.Errorf("邮箱或密码错误")
@@ -723,7 +724,8 @@ func (a *App) UserLogin(email, password, ip string) (*UserLoginResponse, error) 
 		return nil, fmt.Errorf("查询用户失败: %w", err)
 	}
 
-	if emailVerified == 0 {
+	// Local users must verify email; SN users are pre-verified
+	if provider == "local" && emailVerified == 0 {
 		return nil, fmt.Errorf("邮箱未验证，请先查收验证邮件")
 	}
 
@@ -754,7 +756,7 @@ func (a *App) UserLogin(email, password, ip string) (*UserLoginResponse, error) 
 			ID:               userID,
 			Email:            email,
 			Name:             name,
-			Provider:         "local",
+			Provider:         provider,
 			DefaultProductID: defaultProductID,
 		},
 	}, nil

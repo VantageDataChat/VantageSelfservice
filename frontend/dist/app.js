@@ -348,18 +348,32 @@
             return res.json();
         })
         .then(function (data) {
-            if (successEl) { successEl.textContent = data.message || i18n.t('forgot_success'); successEl.classList.remove('hidden'); }
+            if (successEl) { successEl.textContent = i18n.t('forgot_success'); successEl.classList.remove('hidden'); }
             if (errorEl) errorEl.classList.add('hidden');
+            // Disable button for 60s to match backend cooldown
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                var countdown = 60;
+                var origText = submitBtn.textContent;
+                var timer = setInterval(function () {
+                    countdown--;
+                    if (countdown <= 0) {
+                        clearInterval(timer);
+                        submitBtn.disabled = false;
+                        submitBtn.textContent = origText;
+                    } else {
+                        submitBtn.textContent = countdown + 's';
+                    }
+                }, 1000);
+            }
         })
         .catch(function (err) {
             if (errorEl) { errorEl.textContent = err.message; errorEl.classList.remove('hidden'); }
-        })
-        .finally(function () {
             if (submitBtn) submitBtn.disabled = false;
         });
     };
 
-    window.handleResetPasswordPage = function () {
+    function handleResetPasswordPage() {
         // This is called when the /reset-password page loads
         var params = new URLSearchParams(window.location.search);
         var token = params.get('token');
@@ -373,9 +387,7 @@
                 inputs.forEach(function(el) { el.disabled = true; });
             }
         }
-    };
-    // Also expose as a plain function for handleRoute
-    function handleResetPasswordPage() { window.handleResetPasswordPage(); }
+    }
 
     window.handleResetPassword = function () {
         var params = new URLSearchParams(window.location.search);
@@ -398,6 +410,8 @@
         if (successEl) successEl.classList.add('hidden');
         if (submitBtn) submitBtn.disabled = true;
 
+        var resetDone = false;
+
         fetch('/api/auth/reset-password', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -408,9 +422,10 @@
             return res.json();
         })
         .then(function (data) {
+            resetDone = true;
             if (successEl) {
                 successEl.textContent = '';
-                var msgText = document.createTextNode((data.message || i18n.t('reset_success')) + ' ');
+                var msgText = document.createTextNode(i18n.t('reset_success') + ' ');
                 var link = document.createElement('a');
                 link.href = '/login';
                 link.textContent = i18n.t('reset_go_login');
@@ -422,13 +437,12 @@
             // Disable form after success
             if (passwordInput) passwordInput.disabled = true;
             if (confirmInput) confirmInput.disabled = true;
-            if (submitBtn) submitBtn.disabled = true;
         })
         .catch(function (err) {
             if (errorEl) { errorEl.textContent = err.message; errorEl.classList.remove('hidden'); }
         })
         .finally(function () {
-            if (submitBtn && !passwordInput.disabled) submitBtn.disabled = false;
+            if (!resetDone && submitBtn) submitBtn.disabled = false;
         });
     };
 
