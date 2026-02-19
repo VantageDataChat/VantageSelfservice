@@ -187,7 +187,11 @@ func HandleProductIntro(app *App) http.HandlerFunc {
 			}
 		}
 		cfg := app.configManager.Get()
-		WriteJSON(w, http.StatusOK, map[string]string{"product_intro": cfg.ProductIntro})
+		var intro string
+		if cfg != nil {
+			intro = cfg.ProductIntro
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{"product_intro": intro})
 	}
 }
 
@@ -203,10 +207,16 @@ func HandleAppInfo(app *App) http.HandlerFunc {
 		if providers == nil {
 			providers = []string{}
 		}
+		var productName string
+		var maxUploadSizeMB int
+		if cfg != nil {
+			productName = cfg.ProductName
+			maxUploadSizeMB = cfg.Video.MaxUploadSizeMB
+		}
 		WriteJSON(w, http.StatusOK, map[string]interface{}{
-			"product_name":       cfg.ProductName,
+			"product_name":       productName,
 			"oauth_providers":    providers,
-			"max_upload_size_mb": cfg.Video.MaxUploadSizeMB,
+			"max_upload_size_mb": maxUploadSizeMB,
 		})
 	}
 }
@@ -234,6 +244,10 @@ func HandleTranslateProductName(app *App) http.HandlerFunc {
 			return
 		}
 		cfg := app.configManager.Get()
+		if cfg == nil {
+			WriteJSON(w, http.StatusOK, map[string]string{"product_name": ""})
+			return
+		}
 		name := cfg.ProductName
 		if name == "" {
 			WriteJSON(w, http.StatusOK, map[string]string{"product_name": ""})

@@ -107,6 +107,13 @@ func HandleMediaStream(app *App) http.HandlerFunc {
 			WriteError(w, http.StatusNotFound, "media not found")
 			return
 		}
+		// Verify file path stays within expected data directory
+		absPath, _ := filepath.Abs(filePath)
+		absDataDir, _ := filepath.Abs(filepath.Join(".", "data"))
+		if !strings.HasPrefix(absPath, absDataDir+string(filepath.Separator)) {
+			WriteError(w, http.StatusForbidden, "forbidden")
+			return
+		}
 		// Set appropriate content type based on extension
 		ext := strings.ToLower(filepath.Ext(fileName))
 		contentTypes := map[string]string{

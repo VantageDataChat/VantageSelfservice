@@ -80,6 +80,11 @@ func HandleOAuthProviderDelete(app *App) http.HandlerFunc {
 			WriteError(w, http.StatusBadRequest, "missing provider name")
 			return
 		}
+		// Validate provider name to prevent injection
+		if len(provider) > 50 || strings.ContainsAny(provider, "/<>\"'\\") {
+			WriteError(w, http.StatusBadRequest, "invalid provider name")
+			return
+		}
 		if err := app.DeleteOAuthProvider(provider); err != nil {
 			WriteError(w, http.StatusBadRequest, err.Error())
 			return
@@ -152,9 +157,13 @@ func HandleAdminStatus(app *App) http.HandlerFunc {
 			return
 		}
 		cfg := app.configManager.Get()
+		var loginRoute string
+		if cfg != nil {
+			loginRoute = cfg.Admin.LoginRoute
+		}
 		WriteJSON(w, http.StatusOK, map[string]interface{}{
 			"configured":  app.IsAdminConfigured(),
-			"login_route": cfg.Admin.LoginRoute,
+			"login_route": loginRoute,
 		})
 	}
 }
@@ -444,7 +453,7 @@ func HandleTicketExchange(app *App) http.HandlerFunc {
 
 		// Fetch user info
 		var email, name, provider string
-		_ = app.db.QueryRow(
+		_ = app.readDB.QueryRow(
 			"SELECT COALESCE(email,''), COALESCE(name,''), COALESCE(provider,'') FROM users WHERE id = ?",
 			session.UserID,
 		).Scan(&email, &name, &provider)

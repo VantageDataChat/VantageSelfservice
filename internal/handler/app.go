@@ -214,6 +214,9 @@ func (a *App) GetEnabledOAuthProviders() []string {
 // Called after OAuth provider settings are updated.
 func (a *App) RefreshOAuthClient() {
 	cfg := a.configManager.Get()
+	if cfg == nil {
+		return
+	}
 	a.oauthClient = auth.NewOAuthClient(cfg.OAuth.Providers)
 }
 
@@ -252,6 +255,9 @@ type AdminUserInfo struct {
 // IsAdminConfigured returns whether the admin account has been set up.
 func (a *App) IsAdminConfigured() bool {
 	cfg := a.configManager.Get()
+	if cfg == nil {
+		return false
+	}
 	return cfg.Admin.Username != "" && cfg.Admin.PasswordHash != ""
 }
 
@@ -363,6 +369,9 @@ func (a *App) AdminLogin(username, password, ip string) (*AdminLoginResponse, er
 	}
 
 	cfg := a.configManager.Get()
+	if cfg == nil {
+		return nil, fmt.Errorf("系统配置未加载")
+	}
 
 	// Check super admin
 	if cfg.Admin.Username != "" && cfg.Admin.PasswordHash != "" && username == cfg.Admin.Username {
@@ -787,18 +796,18 @@ func GenerateCaptcha() *CaptchaResponse {
 
 	now := time.Now()
 
-	// Only clean expired entries when store exceeds threshold to avoid O(n) on every call
-	if len(captchaStore) > 1000 {
+	// Clean expired entries when store exceeds threshold to bound memory usage
+	if len(captchaStore) > 500 {
 		for k, v := range captchaStore {
 			if now.After(v.expiresAt) {
 				delete(captchaStore, k)
 			}
 		}
 		// Force eviction if still too large after expiry cleanup
-		if len(captchaStore) > 10000 {
+		if len(captchaStore) > 5000 {
 			for k := range captchaStore {
 				delete(captchaStore, k)
-				if len(captchaStore) <= 5000 {
+				if len(captchaStore) <= 2500 {
 					break
 				}
 			}
@@ -953,6 +962,9 @@ func (a *App) UpdateConfig(updates map[string]interface{}) error {
 	}
 	// Refresh services with new config
 	cfg := a.configManager.Get()
+	if cfg == nil {
+		return fmt.Errorf("config not loaded after update")
+	}
 	es := embedding.NewAPIEmbeddingService(cfg.Embedding.Endpoint, cfg.Embedding.APIKey, cfg.Embedding.ModelName, cfg.Embedding.UseMultimodal)
 	ls := llm.NewAPILLMService(cfg.LLM.Endpoint, cfg.LLM.APIKey, cfg.LLM.ModelName, cfg.LLM.Temperature, cfg.LLM.MaxTokens)
 	a.queryEngine.UpdateServices(es, ls, cfg)
@@ -1014,7 +1026,7 @@ func (a *App) CreateAdminUser(username, password, role string, permissions []str
 
 	// Check conflict with super admin
 	cfg := a.configManager.Get()
-	if username == cfg.Admin.Username {
+	if cfg != nil && username == cfg.Admin.Username {
 		return nil, fmt.Errorf("用户名已存在")
 	}
 
@@ -1076,6 +1088,9 @@ func (a *App) ListAdminUsers() ([]AdminUserInfo, error) {
 		}
 		users = append(users, u)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	// Fetch product names for all admin users in a single query (avoid N+1)
 	if len(users) > 0 {
@@ -1092,6 +1107,7 @@ func (a *App) ListAdminUsers() ([]AdminUserInfo, error) {
 				}
 			}
 			pRows.Close()
+			// pRows.Err() is best-effort here; product names are supplementary
 			for i := range users {
 				users[i].ProductNames = productMap[users[i].ID]
 			}
@@ -1218,7 +1234,7 @@ func (a *App) AddKnowledgeEntry(req KnowledgeEntryRequest) error {
 
 		// Additionally, if multimodal embedding is available, also store image-embedded vectors
 		cfg := a.configManager.Get()
-		if cfg.Embedding.UseMultimodal {
+		if cfg != nil && cfg.Embedding.UseMultimodal {
 			for i, imgURL := range req.ImageURLs {
 				imgURL = strings.TrimSpace(imgURL)
 				if imgURL == "" {
@@ -1461,6 +1477,9 @@ func (a *App) ListCustomersPaged(page, pageSize int, search string) (*CustomerLi
 
 		customers = append(customers, c)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("scan customers: %w", err)
+	}
 
 	// Get global banned count (across all customers, not just current page)
 	var globalBanned int
@@ -1549,6 +1568,9 @@ func (a *App) HandleSNLogin(token string) (*SNLoginResponse, int, error) {
 	}
 
 	cfg := a.configManager.Get()
+	if cfg == nil {
+		return &SNLoginResponse{Success: false, Message: "config not loaded"}, 500, nil
+	}
 	authServer := cfg.AuthServer
 	if authServer == "" {
 		return &SNLoginResponse{Success: false, Message: "auth server not configured"}, 500, nil

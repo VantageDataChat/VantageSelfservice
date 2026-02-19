@@ -80,46 +80,45 @@ func InitDB(dbPath string) (*DBPair, error) {
 		return nil, err
 	}
 
-	// Schema setup uses the write connection
-	if err := createTables(writeDB); err != nil {
+	// Use a closure to clean up both connections on any schema setup error
+	cleanup := func() {
 		readDB.Close()
 		writeDB.Close()
+	}
+
+	// Schema setup uses the write connection
+	if err := createTables(writeDB); err != nil {
+		cleanup()
 		return nil, err
 	}
 
 	if err := createAdminUsersTable(writeDB); err != nil {
-		readDB.Close()
-		writeDB.Close()
+		cleanup()
 		return nil, fmt.Errorf("failed to create admin_users table: %w", err)
 	}
 
 	if err := createProductTables(writeDB); err != nil {
-		readDB.Close()
-		writeDB.Close()
+		cleanup()
 		return nil, fmt.Errorf("failed to create product tables: %w", err)
 	}
 
 	if err := migrateTables(writeDB); err != nil {
-		readDB.Close()
-		writeDB.Close()
+		cleanup()
 		return nil, err
 	}
 
 	if err := migrateProductTables(writeDB); err != nil {
-		readDB.Close()
-		writeDB.Close()
+		cleanup()
 		return nil, fmt.Errorf("failed to migrate product tables: %w", err)
 	}
 
 	if err := createLoginAttemptsTable(writeDB); err != nil {
-		readDB.Close()
-		writeDB.Close()
+		cleanup()
 		return nil, fmt.Errorf("failed to create login_attempts table: %w", err)
 	}
 
 	if err := createIndexes(writeDB); err != nil {
-		readDB.Close()
-		writeDB.Close()
+		cleanup()
 		return nil, err
 	}
 

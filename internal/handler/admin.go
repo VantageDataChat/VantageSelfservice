@@ -103,6 +103,7 @@ func HandleAdminUserByID(app *App) http.HandlerFunc {
 			return
 		}
 
+		// Prevent super admin from deleting themselves
 		if err := app.DeleteAdminUser(id); err != nil {
 			log.Printf("[Admin] delete user error for %s: %v", id, err)
 			WriteError(w, http.StatusInternalServerError, "删除用户失败")

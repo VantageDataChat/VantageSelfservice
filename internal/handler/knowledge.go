@@ -129,6 +129,10 @@ func HandleKnowledgeVideoUpload(app *App) http.HandlerFunc {
 
 		// Read with size limit
 		cfg := app.configManager.Get()
+		if cfg == nil {
+			WriteError(w, http.StatusInternalServerError, "config not loaded")
+			return
+		}
 		maxUploadSizeMB := cfg.Video.MaxUploadSizeMB
 		maxSize := int64(maxUploadSizeMB) << 20
 		data, err := io.ReadAll(io.LimitReader(file, maxSize+1))

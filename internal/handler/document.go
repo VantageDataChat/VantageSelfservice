@@ -77,6 +77,10 @@ func HandleDocumentUpload(app *App) http.HandlerFunc {
 
 		// Limit request body size to prevent memory exhaustion
 		cfg := app.configManager.Get()
+		if cfg == nil {
+			WriteError(w, http.StatusInternalServerError, "config not loaded")
+			return
+		}
 		maxUploadSizeMB := cfg.Video.MaxUploadSizeMB
 		maxUploadSize := int64(maxUploadSizeMB)<<20 + 10<<20 // file limit + 10MB overhead
 		r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
@@ -249,6 +253,13 @@ func HandlePublicDocumentDownload(app *App) http.HandlerFunc {
 			WriteError(w, http.StatusNotFound, "文件未找到")
 			return
 		}
+		// Verify file path stays within expected data directory
+		absPath, _ := filepath.Abs(filePath)
+		absDataDir, _ := filepath.Abs(filepath.Join(".", "data"))
+		if !strings.HasPrefix(absPath, absDataDir+string(filepath.Separator)) {
+			WriteError(w, http.StatusForbidden, "forbidden")
+			return
+		}
 		safeName := strings.Map(func(r rune) rune {
 			if r == '"' || r == '\n' || r == '\r' || r == '\\' {
 				return '_'
@@ -291,6 +302,13 @@ func HandleDocumentByID(app *App) http.HandlerFunc {
 			filePath, fileName, err := app.docManager.GetFilePath(docID)
 			if err != nil {
 				WriteError(w, http.StatusNotFound, "文件未找到")
+				return
+			}
+			// Verify file path stays within expected data directory
+			absPath, _ := filepath.Abs(filePath)
+			absDataDir, _ := filepath.Abs(filepath.Join(".", "data"))
+			if !strings.HasPrefix(absPath, absDataDir+string(filepath.Separator)) {
+				WriteError(w, http.StatusForbidden, "forbidden")
 				return
 			}
 			// Sanitize filename to prevent header injection
