@@ -36,10 +36,80 @@ type ParseResult struct {
 	Duration   float64             // 视频总时长（秒）
 }
 
+// isRapidSpeechLogLine 判断一行是否为 RapidSpeech/SenseVoice 的日志输出。
+// rs-asr-offline 会将模型加载、GPU 初始化、性能统计等日志写入 stdout，
+// 这些日志行不是转录文本，需要过滤掉。
+func isRapidSpeechLogLine(line string) bool {
+	// 常见的日志行特征关键词
+	logPatterns := []string{
+		"processing time",
+		"encoder processing",
+		"decoder processing",
+		"model path",
+		"model loaded",
+		"thread",
+		"CMVN",
+		"RTF",
+		"Real-Time Factor",
+		"GPU",
+		"CPU",
+		"gguf",
+		"ggml",
+		"sense-voice",
+		"SenseVoice",
+		"RapidSpeech",
+		"rs-asr",
+		"loading model",
+		"初始化",
+		"加载模型",
+		"线程",
+		"回退",
+		"fallback",
+	}
+	lower := strings.ToLower(line)
+	for _, p := range logPatterns {
+		if strings.Contains(lower, strings.ToLower(p)) {
+			return true
+		}
+	}
+	// 以数字+点开头且包含冒号的行通常是日志（如 "1. Encoder processing time: 0.648946"）
+	trimmed := strings.TrimSpace(line)
+	if len(trimmed) > 2 && trimmed[0] >= '0' && trimmed[0] <= '9' && trimmed[1] == '.' && strings.Contains(trimmed, ":") {
+		// 检查冒号后面是否跟着数字（日志格式），而非普通文本
+		idx := strings.Index(trimmed, ":")
+		if idx > 0 && idx < len(trimmed)-1 {
+			after := strings.TrimSpace(trimmed[idx+1:])
+			if len(after) > 0 && (after[0] >= '0' && after[0] <= '9' || after[0] == '-' || after[0] == '"') {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// filterRapidSpeechOutput 从 RapidSpeech 的 stdout 输出中过滤掉日志行，
+// 只保留实际的语音转录文本。
+func filterRapidSpeechOutput(raw string) string {
+	lines := strings.Split(raw, "\n")
+	var transcriptLines []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if isRapidSpeechLogLine(trimmed) {
+			continue
+		}
+		transcriptLines = append(transcriptLines, trimmed)
+	}
+	return strings.Join(transcriptLines, "\n")
+}
+
 // ParseRapidSpeechOutput 解析 RapidSpeech 文本输出为 TranscriptSegment 列表
 // RapidSpeech输出格式为纯文本，我们将整段文本作为一个segment
+// 注意：会自动过滤掉 rs-asr-offline 混入 stdout 的日志行
 func ParseRapidSpeechOutput(textData string) []TranscriptSegment {
-	text := strings.TrimSpace(textData)
+	text := filterRapidSpeechOutput(textData)
 	if text == "" {
 		return []TranscriptSegment{}
 	}
@@ -245,8 +315,8 @@ func (p *Parser) Transcribe(audioPath string) ([]TranscriptSegment, error) {
 		return nil, fmt.Errorf("RapidSpeech 转录失败: %s: %w", strings.TrimSpace(stderr), err)
 	}
 
-	// 解析输出文本
-	text := strings.TrimSpace(string(output))
+	// 解析输出文本，过滤掉 rs-asr-offline 混入 stdout 的日志行
+	text := filterRapidSpeechOutput(string(output))
 	if text == "" {
 		return []TranscriptSegment{}, nil
 	}
