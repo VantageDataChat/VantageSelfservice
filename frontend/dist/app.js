@@ -1208,7 +1208,7 @@
 
         // Display images as photo wall gallery, video/audio as play buttons
         var _mediaTypes = { video:1, mp4:1, avi:1, mkv:1, mov:1, webm:1, mp3:1, wav:1, ogg:1, flac:1 };
-        if (msg.sources && msg.sources.length > 0) {
+        if (!msg.isPending && msg.sources && msg.sources.length > 0) {
             var images = [];
             var videoSegments = {};
             for (var k = 0; k < msg.sources.length; k++) {
@@ -1274,7 +1274,7 @@
         html += '</div>';
 
         // Sources
-        if (msg.sources && msg.sources.length > 0) {
+        if (!msg.isPending && msg.sources && msg.sources.length > 0) {
             var srcId = 'sources-' + msg.timestamp;
             var downloadableTypes = { pdf:1, doc:1, docx:1, word:1, xls:1, xlsx:1, excel:1, ppt:1, pptx:1, video:1, mp4:1, avi:1, mkv:1, mov:1, webm:1 };
             var productId = localStorage.getItem('askflow_product_id') || '';
