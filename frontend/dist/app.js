@@ -1474,6 +1474,10 @@
 
     // Media modal for video/audio playback
     window.openMediaModal = function(idx) {
+        // Close any existing modal first
+        if (window._mediaModalOverlay) {
+            window.closeMediaModal();
+        }
         var info = window._mediaRegistry[idx];
         if (!info) return;
         var url = info.url;
@@ -1488,9 +1492,9 @@
         content += '<div class="media-modal-body">';
         var modalPlayerId = 'modal-player-' + Date.now();
         if (isAudio) {
-            content += '<audio id="' + modalPlayerId + '" controls autoplay preload="metadata" class="media-modal-audio"' + (startTime > 0 ? ' onloadedmetadata="this.currentTime=' + startTime + '"' : '') + '><source src="' + escapeHtml(url) + '"></audio>';
+            content += '<audio id="' + modalPlayerId + '" controls autoplay preload="auto" class="media-modal-audio"' + (startTime > 0 ? ' onloadedmetadata="this.currentTime=' + startTime + '"' : '') + '><source src="' + escapeHtml(url) + '"></audio>';
         } else {
-            content += '<video id="' + modalPlayerId + '" controls autoplay preload="metadata" class="media-modal-video"' + (startTime > 0 ? ' onloadedmetadata="this.currentTime=' + startTime + '"' : '') + '><source src="' + escapeHtml(url) + '"></video>';
+            content += '<video id="' + modalPlayerId + '" controls autoplay playsinline preload="auto" class="media-modal-video"' + (startTime > 0 ? ' onloadedmetadata="this.currentTime=' + startTime + '"' : '') + '><source src="' + escapeHtml(url) + '"></video>';
         }
         if (segments.length > 0) {
             content += '<div class="media-modal-segments">';

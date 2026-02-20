@@ -139,7 +139,9 @@ func HandleMediaStream(app *App) http.HandlerFunc {
 		}, fileName)
 		w.Header().Set("Content-Disposition", "inline; filename=\""+safeName+"\"")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		// ServeFile handles Range requests automatically for seeking
+		// Cache media files for 1 hour (they rarely change once uploaded)
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		// ServeFile handles Range requests and Accept-Ranges automatically for seeking/streaming
 		http.ServeFile(w, r, filePath)
 	}
 }
