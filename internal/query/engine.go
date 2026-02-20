@@ -712,20 +712,50 @@ func (qe *QueryEngine) findDocumentImages(results []vectorstore.SearchResult) []
 		}
 	}
 
-	// Collect unique document IDs
-	docIDs := make(map[string]string) // docID -> docName
-	for _, r := range results {
-		if r.DocumentID != "" {
-			docIDs[r.DocumentID] = r.DocumentName
-		}
+	// Collect unique document IDs and the chunk indices that were hit
+	type docHit struct {
+		name    string
+		indices []int
 	}
-	if len(docIDs) == 0 {
+	docHits := make(map[string]*docHit) // docID -> hit info
+	for _, r := range results {
+		if r.DocumentID == "" {
+			continue
+		}
+		h, ok := docHits[r.DocumentID]
+		if !ok {
+			h = &docHit{name: r.DocumentName}
+			docHits[r.DocumentID] = h
+		}
+		h.indices = append(h.indices, r.ChunkIndex)
+	}
+	if len(docHits) == 0 {
 		return nil
 	}
 
+	// Build a set of (docID, chunkIndex) pairs that are "nearby" the hit chunks
+	// For scanned PDFs each page is a chunk, so ±1 keeps only the relevant pages
+	const proximity = 1
+	type docChunkKey struct {
+		docID string
+		idx   int
+	}
+	nearby := make(map[docChunkKey]bool)
+	for docID, h := range docHits {
+		for _, ci := range h.indices {
+			for delta := -proximity; delta <= proximity; delta++ {
+				idx := ci + delta
+				if idx < 0 {
+					idx = 0
+				}
+				nearby[docChunkKey{docID, idx}] = true
+			}
+		}
+	}
+
 	// Batch query: single IN clause instead of N+1 queries
-	ids := make([]string, 0, len(docIDs))
-	for id := range docIDs {
+	ids := make([]string, 0, len(docHits))
+	for id := range docHits {
 		ids = append(ids, id)
 	}
 	placeholders := make([]string, len(ids))
@@ -735,7 +765,7 @@ func (qe *QueryEngine) findDocumentImages(results []vectorstore.SearchResult) []
 		args[i] = id
 	}
 
-	query := `SELECT document_id, image_url, chunk_text FROM chunks WHERE document_id IN (` +
+	query := `SELECT document_id, chunk_index, image_url, chunk_text FROM chunks WHERE document_id IN (` +
 		strings.Join(placeholders, ",") + `) AND image_url != '' AND image_url IS NOT NULL`
 	rows, err := qe.readDB.Query(query, args...)
 	if err != nil {
@@ -746,15 +776,21 @@ func (qe *QueryEngine) findDocumentImages(results []vectorstore.SearchResult) []
 	var images []SourceRef
 	for rows.Next() {
 		var docID, imgURL, chunkText string
-		if err := rows.Scan(&docID, &imgURL, &chunkText); err != nil {
+		var chunkIdx int
+		if err := rows.Scan(&docID, &chunkIdx, &imgURL, &chunkText); err != nil {
 			continue
 		}
 		if imgURL == "" {
 			continue
 		}
+		// Only include images from chunks near the search hits
+		if !nearby[docChunkKey{docID, chunkIdx}] {
+			continue
+		}
+		h := docHits[docID]
 		images = append(images, SourceRef{
-			DocumentName: docIDs[docID],
-			ChunkIndex:   -1,
+			DocumentName: h.name,
+			ChunkIndex:   chunkIdx,
 			Snippet:      chunkText,
 			ImageURL:     imgURL,
 		})
