@@ -3032,3 +3032,117 @@ a.chat-source-download:hover {
         max-width: 140px;
     }
 }
+
+/* ===== About Dialog ===== */
+.about-dialog-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+    backdrop-filter: blur(2px);
+}
+
+.about-dialog {
+    background: #fff;
+    border-radius: 16px;
+    padding: 2.5rem 2rem 2rem;
+    width: 360px;
+    max-width: 90vw;
+    text-align: center;
+    position: relative;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+    animation: modalFadeIn 0.2s ease-out;
+}
+
+.about-dialog-close {
+    position: absolute;
+    top: 12px;
+    right: 14px;
+    background: none;
+    border: none;
+    font-size: 1.4rem;
+    color: #9ca3af;
+    cursor: pointer;
+    line-height: 1;
+    padding: 4px 8px;
+    border-radius: 6px;
+    transition: color 0.15s, background 0.15s;
+}
+
+.about-dialog-close:hover {
+    color: #333;
+    background: #f0f0f0;
+}
+
+.about-dialog-logo {
+    margin-bottom: 1rem;
+}
+
+.about-dialog-logo svg {
+    width: 64px;
+    height: 64px;
+}
+
+.about-dialog-title {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #1f2937;
+    margin: 0 0 0.25rem;
+}
+
+.about-dialog-version {
+    font-size: 0.9rem;
+    color: #6b7280;
+    margin-bottom: 1.25rem;
+}
+
+.about-dialog-quote {
+    background: #f9fafb;
+    border-radius: 10px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.25rem;
+}
+
+.about-dialog-poem {
+    font-size: 1rem;
+    color: #374151;
+    margin: 0 0 0.4rem;
+    line-height: 1.6;
+    font-style: italic;
+}
+
+.about-dialog-poet {
+    font-size: 0.8rem;
+    color: #9ca3af;
+    margin: 0;
+}
+
+.about-dialog-author {
+    font-size: 0.9rem;
+    color: #4b5563;
+    margin-bottom: 0.5rem;
+}
+
+.about-dialog-github {
+    font-size: 0.8rem;
+}
+
+.about-dialog-github a {
+    color: #4F46E5;
+    text-decoration: none;
+}
+
+.about-dialog-github a:hover {
+    text-decoration: underline;
+}
+
+/* Version info hover hint */
+.admin-version-info {
+    transition: color 0.15s;
+}
+.admin-version-info:hover {
+    color: #4F46E5 !important;
+}

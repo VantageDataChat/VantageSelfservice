@@ -4947,6 +4947,44 @@
         navigate('/login');
     };
 
+    // --- About Dialog ---
+    window.showAboutDialog = function () {
+        // Remove existing overlay if any
+        var existing = document.getElementById('about-dialog-overlay');
+        if (existing) existing.parentNode.removeChild(existing);
+
+        var overlay = document.createElement('div');
+        overlay.id = 'about-dialog-overlay';
+        overlay.className = 'about-dialog-overlay';
+        overlay.innerHTML =
+            '<div class="about-dialog">' +
+                '<button class="about-dialog-close" onclick="closeAboutDialog()">&times;</button>' +
+                '<div class="about-dialog-logo">' +
+                    '<svg width="64" height="64" viewBox="0 0 48 48" fill="none">' +
+                        '<rect width="48" height="48" rx="12" fill="#4F46E5"/>' +
+                        '<path d="M16 20h16M16 24h12M16 28h14M14 16h20a2 2 0 012 2v12a2 2 0 01-2 2H14a2 2 0 01-2-2V18a2 2 0 012-2z" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+                    '</svg>' +
+                '</div>' +
+                '<h2 class="about-dialog-title">问渠</h2>' +
+                '<div class="about-dialog-version">V1.0 Beta</div>' +
+                '<div class="about-dialog-quote">' +
+                    '<p class="about-dialog-poem">问渠那得清如许？为有源头活水来。</p>' +
+                    '<p class="about-dialog-poet">—— 朱熹《观书有感》</p>' +
+                '</div>' +
+                '<div class="about-dialog-author">作者：Dr. Daniel</div>' +
+                '<div class="about-dialog-github"><a href="https://github.com/Vantagics/AskFlow.git" target="_blank" rel="noopener noreferrer">GitHub: Vantagics/AskFlow</a></div>' +
+            '</div>';
+        overlay.addEventListener('click', function (e) {
+            if (e.target === overlay) closeAboutDialog();
+        });
+        document.body.appendChild(overlay);
+    };
+
+    window.closeAboutDialog = function () {
+        var overlay = document.getElementById('about-dialog-overlay');
+        if (overlay) overlay.parentNode.removeChild(overlay);
+    };
+
     window.adminLogout = function () {
         adminRole = '';
         adminPermissions = [];
