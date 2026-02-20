@@ -673,6 +673,81 @@ func (dm *DocumentManager) processFile(docID, docName string, fileData []byte, f
 				return pageResults[i].index < pageResults[j].index
 			})
 
+			// Store each page as a chunk with its image (like PPT slides),
+			// so search results directly include the relevant page image.
+			if len(pageResults) > 0 {
+				// Build page index -> image URL mapping
+				pageImageURLs := make(map[int]string)
+				for i, img := range result.Images {
+					if len(img.Data) > 0 {
+						savedURL, saveErr := dm.saveExtractedImage(img.Data)
+						if saveErr != nil {
+							log.Printf("Warning: failed to save scanned PDF page image %d: %v", i, saveErr)
+						} else {
+							pageImageURLs[i] = savedURL
+						}
+					}
+				}
+
+				// Batch embed all page texts
+				texts := make([]string, len(pageResults))
+				for i, pr := range pageResults {
+					texts[i] = pr.text
+				}
+				const batchSize = 64
+				vectors := make([][]float64, len(texts))
+				for start := 0; start < len(texts); start += batchSize {
+					end := start + batchSize
+					if end > len(texts) {
+						end = len(texts)
+					}
+					batch, embErr := dm.embeddingService.EmbedBatch(texts[start:end])
+					if embErr != nil {
+						return nil, fmt.Errorf("scanned PDF embedding error (batch %d-%d): %w", start, end, embErr)
+					}
+					copy(vectors[start:end], batch)
+				}
+
+				// Store each page as a chunk with its page image
+				for i, pr := range pageResults {
+					pageChunk := []vectorstore.VectorChunk{{
+						ChunkText:    pr.text,
+						ChunkIndex:   pr.index,
+						DocumentID:   docID,
+						DocumentName: docName,
+						Vector:       vectors[i],
+						ImageURL:     pageImageURLs[pr.index],
+						ProductID:    productID,
+					}}
+					if err := dm.vectorStore.Store(docID, pageChunk); err != nil {
+						log.Printf("Warning: failed to store scanned PDF page %d: %v", pr.index, err)
+					}
+				}
+
+				log.Printf("扫描型PDF存储完成: doc=%s, %d 页 (每页含文本+图片)", docID, len(pageResults))
+
+				// Calculate accurate total text chars
+				totalChars := 0
+				for _, t := range texts {
+					totalChars += len([]rune(t))
+				}
+
+				// Store content hash for dedup
+				var sb strings.Builder
+				for _, t := range texts {
+					sb.WriteString(t)
+				}
+				hash := contentHash(sb.String())
+				dm.db.Exec(`UPDATE documents SET content_hash = ? WHERE id = ?`, hash, docID)
+
+				stats := &ImportStats{
+					TextChars:  totalChars,
+					ImageCount: len(pageImageURLs),
+				}
+				return stats, nil
+			}
+
+			// Fallback: if no page results, merge text for standard processing
 			var sb strings.Builder
 			for _, pr := range pageResults {
 				if sb.Len() > 0 {

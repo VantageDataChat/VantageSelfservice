@@ -703,7 +703,9 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 }
 
 // findDocumentImages queries the database for image chunks from the same documents
-// as the search results. Returns image SourceRefs that aren't already in the results.
+// as the search results. Only returns images that are related to the matched chunks,
+// using chunk_index proximity. For scanned PDFs, text chunks have index 0,1,2...
+// and image chunks have index 1000+page, so we map accordingly.
 func (qe *QueryEngine) findDocumentImages(results []vectorstore.SearchResult) []SourceRef {
 	// Check if results already have images
 	for _, r := range results {
@@ -712,10 +714,11 @@ func (qe *QueryEngine) findDocumentImages(results []vectorstore.SearchResult) []
 		}
 	}
 
-	// Collect unique document IDs and the chunk indices that were hit
+	// Collect unique document IDs and the chunk indices/times that were hit
 	type docHit struct {
-		name    string
-		indices []int
+		name      string
+		indices   []int
+		timeRanges [][2]float64 // [start, end] pairs from search results
 	}
 	docHits := make(map[string]*docHit) // docID -> hit info
 	for _, r := range results {
@@ -728,32 +731,15 @@ func (qe *QueryEngine) findDocumentImages(results []vectorstore.SearchResult) []
 			docHits[r.DocumentID] = h
 		}
 		h.indices = append(h.indices, r.ChunkIndex)
+		if r.StartTime > 0 || r.EndTime > 0 {
+			h.timeRanges = append(h.timeRanges, [2]float64{r.StartTime, r.EndTime})
+		}
 	}
 	if len(docHits) == 0 {
 		return nil
 	}
 
-	// Build a set of (docID, chunkIndex) pairs that are "nearby" the hit chunks
-	// For scanned PDFs each page is a chunk, so ±1 keeps only the relevant pages
-	const proximity = 1
-	type docChunkKey struct {
-		docID string
-		idx   int
-	}
-	nearby := make(map[docChunkKey]bool)
-	for docID, h := range docHits {
-		for _, ci := range h.indices {
-			for delta := -proximity; delta <= proximity; delta++ {
-				idx := ci + delta
-				if idx < 0 {
-					idx = 0
-				}
-				nearby[docChunkKey{docID, idx}] = true
-			}
-		}
-	}
-
-	// Batch query: single IN clause instead of N+1 queries
+	// Batch query
 	ids := make([]string, 0, len(docHits))
 	for id := range docHits {
 		ids = append(ids, id)
@@ -773,27 +759,116 @@ func (qe *QueryEngine) findDocumentImages(results []vectorstore.SearchResult) []
 	}
 	defer rows.Close()
 
-	var images []SourceRef
+	// Collect all candidate images
+	type imgCandidate struct {
+		docID string
+		idx   int
+		imgURL string
+		text  string
+	}
+	var candidates []imgCandidate
 	for rows.Next() {
-		var docID, imgURL, chunkText string
-		var chunkIdx int
-		if err := rows.Scan(&docID, &chunkIdx, &imgURL, &chunkText); err != nil {
+		var c imgCandidate
+		if err := rows.Scan(&c.docID, &c.idx, &c.imgURL, &c.text); err != nil {
 			continue
 		}
-		if imgURL == "" {
+		if c.imgURL == "" {
 			continue
 		}
-		// Only include images from chunks near the search hits
-		if !nearby[docChunkKey{docID, chunkIdx}] {
+		candidates = append(candidates, c)
+	}
+
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	// For video keyframes (index >= 10000), look up their timestamps from video_segments
+	// so we can match by time proximity with the search results
+	keyframeTimestamps := make(map[string]float64) // "docID-chunkIndex" -> timestamp
+	var keyframeChunkIDs []string
+	for _, c := range candidates {
+		if c.idx >= 10000 {
+			chunkID := fmt.Sprintf("%s-%d", c.docID, c.idx)
+			keyframeChunkIDs = append(keyframeChunkIDs, chunkID)
+		}
+	}
+	if len(keyframeChunkIDs) > 0 {
+		kfPlaceholders := make([]string, len(keyframeChunkIDs))
+		kfArgs := make([]interface{}, len(keyframeChunkIDs))
+		for i, id := range keyframeChunkIDs {
+			kfPlaceholders[i] = "?"
+			kfArgs[i] = id
+		}
+		kfQuery := `SELECT chunk_id, start_time FROM video_segments WHERE chunk_id IN (` +
+			strings.Join(kfPlaceholders, ",") + `)`
+		kfRows, kfErr := qe.readDB.Query(kfQuery, kfArgs...)
+		if kfErr == nil {
+			defer kfRows.Close()
+			for kfRows.Next() {
+				var chunkID string
+				var startTime float64
+				if kfRows.Scan(&chunkID, &startTime) == nil {
+					keyframeTimestamps[chunkID] = startTime
+				}
+			}
+		}
+	}
+
+	const proximity = 1
+	const timeProximity = 30.0 // seconds: match keyframes within ±30s of search hit time range
+	var images []SourceRef
+	for _, c := range candidates {
+		h := docHits[c.docID]
+		if h == nil {
 			continue
 		}
-		h := docHits[docID]
-		images = append(images, SourceRef{
-			DocumentName: h.name,
-			ChunkIndex:   chunkIdx,
-			Snippet:      chunkText,
-			ImageURL:     imgURL,
-		})
+		matched := false
+
+		// Video keyframes (index >= 10000): match by time proximity
+		if c.idx >= 10000 {
+			chunkID := fmt.Sprintf("%s-%d", c.docID, c.idx)
+			kfTime, hasTime := keyframeTimestamps[chunkID]
+			if hasTime && len(h.timeRanges) > 0 {
+				for _, tr := range h.timeRanges {
+					if kfTime >= tr[0]-timeProximity && kfTime <= tr[1]+timeProximity {
+						matched = true
+						break
+					}
+				}
+			}
+			// No time info → skip keyframe (don't include blindly)
+		} else if c.idx >= 1000 {
+			// Scanned PDF mapping: image index = 1000 + page
+			pageIdx := c.idx - 1000
+			for _, hitIdx := range h.indices {
+				if pageIdx >= hitIdx-proximity && pageIdx <= hitIdx+proximity {
+					matched = true
+					break
+				}
+			}
+		} else {
+			// Direct proximity (PPT and similar where text+image share same index range)
+			for _, hitIdx := range h.indices {
+				if c.idx >= hitIdx-proximity && c.idx <= hitIdx+proximity {
+					matched = true
+					break
+				}
+			}
+		}
+
+		if matched {
+			images = append(images, SourceRef{
+				DocumentName: h.name,
+				ChunkIndex:   c.idx,
+				Snippet:      c.text,
+				ImageURL:     c.imgURL,
+			})
+		}
+	}
+
+	// Safety cap: never return more than 5 enriched images
+	if len(images) > 5 {
+		images = images[:5]
 	}
 
 	return images
