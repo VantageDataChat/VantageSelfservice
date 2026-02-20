@@ -667,6 +667,21 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 			_ = qe.createPendingQuestion(req.Question, req.UserID, req.ImageData, req.ProductID)
 			isPending = true
 		}
+		// When unable to answer, don't return sources/images — they are irrelevant noise
+		pendingMsg := "该问题已转交人工处理，请稍后查看回复"
+		translated, tErr := ls.Generate(
+			"你是一个翻译助手。将以下内容翻译为与用户提问相同的语言。如果用户用英文提问，翻译为英文；如果用户用中文提问，保持中文。只输出翻译结果，不要添加任何解释。",
+			[]string{pendingMsg},
+			req.Question,
+		)
+		if tErr == nil && translated != "" {
+			pendingMsg = translated
+		}
+		return &QueryResponse{
+			Answer:    pendingMsg,
+			IsPending: true,
+			DebugInfo: dbg,
+		}, nil
 	} else if debugMode {
 		dbg.Steps = append(dbg.Steps, "Step 5.5: LLM answered successfully")
 	}
