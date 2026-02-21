@@ -106,6 +106,9 @@ type UploadFileRequest struct {
 
 func (dm *DocumentManager) UploadFile(req UploadFileRequest) (*DocumentInfo, error) {
 	fileType := strings.ToLower(req.FileType)
+	if fileType == "ppt_legacy" {
+		return nil, fmt.Errorf("不支持旧版 .ppt 格式，请先用 PowerPoint 或 WPS 将文件另存为 .pptx 格式后再上传")
+	}
 	if !supportedFileTypes[fileType] {
 		return nil, fmt.Errorf("不支持的文件格式")
 	}

@@ -179,8 +179,10 @@ func DetectFileType(filename string) string {
 		return "word"
 	case strings.HasSuffix(lower, ".xlsx"), strings.HasSuffix(lower, ".xls"):
 		return "excel"
-	case strings.HasSuffix(lower, ".pptx"), strings.HasSuffix(lower, ".ppt"):
+	case strings.HasSuffix(lower, ".pptx"):
 		return "ppt"
+	case strings.HasSuffix(lower, ".ppt"):
+		return "ppt_legacy"
 	case strings.HasSuffix(lower, ".md"), strings.HasSuffix(lower, ".markdown"):
 		return "markdown"
 	case strings.HasSuffix(lower, ".html"), strings.HasSuffix(lower, ".htm"):

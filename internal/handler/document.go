@@ -21,7 +21,7 @@ var SupportedExtensions = map[string]string{
 	".docx":     "word",
 	".xls":      "excel",
 	".xlsx":     "excel",
-	".ppt":      "ppt",
+	".ppt":      "ppt_legacy",
 	".pptx":     "ppt",
 	".md":       "markdown",
 	".markdown": "markdown",
