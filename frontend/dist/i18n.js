@@ -622,6 +622,7 @@
             // Log management
             'admin_logs_load_failed': '加载日志失败',
             'admin_logs_unknown_error': '未知错误',
+            'admin_logs_empty': '暂无日志记录',
             'admin_logs_rotation_range_error': '轮转大小必须在 1-10240 MB 之间',
             'admin_logs_rotation_saved': '日志轮转大小已保存',
             'admin_logs_save_failed': '保存失败',
@@ -1259,6 +1260,7 @@
             // Log management
             'admin_logs_load_failed': 'Failed to load logs',
             'admin_logs_unknown_error': 'Unknown error',
+            'admin_logs_empty': 'No log records',
             'admin_logs_rotation_range_error': 'Rotation size must be between 1-10240 MB',
             'admin_logs_rotation_saved': 'Log rotation size saved',
             'admin_logs_save_failed': 'Save failed',

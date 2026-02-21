@@ -3672,7 +3672,7 @@
                 var rotInput = document.getElementById('cfg-log-rotation-mb');
                 if (rotInput) rotInput.value = rotMB;
                 if (lines.length === 0) {
-                    content.innerHTML = '<span style="color:#94a3b8;">暂无日志记录</span>';
+                    content.innerHTML = '<span style="color:#94a3b8;">' + i18n.t('admin_logs_empty') + '</span>';
                     return;
                 }
                 // Render lines with color coding

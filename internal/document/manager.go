@@ -470,6 +470,7 @@ func (dm *DocumentManager) getExistingChunkEmbeddings(texts []string) map[string
 		rows.Close()
 		if err := rows.Err(); err != nil {
 			log.Printf("Warning: chunk embedding query iteration error: %v", err)
+			errlog.Logf("[DB] chunk embedding query iteration error: %v", err)
 		}
 	}
 	return result
@@ -644,7 +645,7 @@ func (dm *DocumentManager) processFile(docID, docName string, fileData []byte, f
 						ocrText, ocrErr := dm.ocrImageViaLLM(img.Data)
 						if ocrErr != nil {
 							log.Printf("Warning: OCR第%d页失败: %v", i+1, ocrErr)
-							errlog.Logf("[OCR] page %d failed for doc=%s: %v", i+1, docID, ocrErr)
+							errlog.Logf("[OCR] page %d failed for doc=%s file=%q: %v", i+1, docID, docName, ocrErr)
 							continue
 						}
 						if ocrText != "" {
@@ -683,6 +684,7 @@ func (dm *DocumentManager) processFile(docID, docName string, fileData []byte, f
 						savedURL, saveErr := dm.saveExtractedImage(img.Data)
 						if saveErr != nil {
 							log.Printf("Warning: failed to save scanned PDF page image %d: %v", i, saveErr)
+							errlog.Logf("[Extract] failed to save scanned PDF page image %d for doc=%s file=%q: %v", i, docID, docName, saveErr)
 						} else {
 							pageImageURLs[i] = savedURL
 						}
@@ -721,6 +723,7 @@ func (dm *DocumentManager) processFile(docID, docName string, fileData []byte, f
 					}}
 					if err := dm.vectorStore.Store(docID, pageChunk); err != nil {
 						log.Printf("Warning: failed to store scanned PDF page %d: %v", pr.index, err)
+						errlog.Logf("[Store] failed to store scanned PDF page %d for doc=%s file=%q: %v", pr.index, docID, docName, err)
 					}
 				}
 
@@ -792,6 +795,7 @@ func (dm *DocumentManager) processFile(docID, docName string, fileData []byte, f
 				savedURL, saveErr := dm.saveExtractedImage(img.Data)
 				if saveErr != nil {
 					log.Printf("Warning: failed to save PPT slide image %d: %v", i, saveErr)
+					errlog.Logf("[Extract] failed to save PPT slide image %d for doc=%s file=%q: %v", i, docID, docName, saveErr)
 				} else {
 					savedLocalURL = savedURL
 				}
@@ -844,6 +848,7 @@ func (dm *DocumentManager) processFile(docID, docName string, fileData []byte, f
 			}}
 			if err := dm.vectorStore.Store(docID, slideChunk); err != nil {
 				log.Printf("Warning: failed to store PPT slide %d: %v", s.index+1, err)
+				errlog.Logf("[Store] failed to store PPT slide %d for doc=%s file=%q: %v", s.index+1, docID, docName, err)
 			} else {
 				imageCount++
 			}
@@ -870,6 +875,7 @@ func (dm *DocumentManager) processFile(docID, docName string, fileData []byte, f
 			savedURL, saveErr := dm.saveExtractedImage(img.Data)
 			if saveErr != nil {
 				log.Printf("Warning: failed to save extracted image %d: %v", i, saveErr)
+				errlog.Logf("[Extract] failed to save extracted image %d for doc=%s file=%q: %v", i, docID, docName, saveErr)
 				// Continue — we can still embed the image even if disk save fails
 			} else {
 				savedLocalURL = savedURL
@@ -888,6 +894,7 @@ func (dm *DocumentManager) processFile(docID, docName string, fileData []byte, f
 		vec, err := dm.embeddingService.EmbedImageURL(embedURL)
 		if err != nil {
 			log.Printf("Warning: failed to embed image %d (%s): %v", i, img.Alt, err)
+			errlog.Logf("[Embed] failed to embed image %d (%s) for doc=%s file=%q: %v", i, img.Alt, docID, docName, err)
 			continue
 		}
 
@@ -908,6 +915,7 @@ func (dm *DocumentManager) processFile(docID, docName string, fileData []byte, f
 		}}
 		if err := dm.vectorStore.Store(docID, imgChunk); err != nil {
 			log.Printf("Warning: failed to store image vector %d: %v", i, err)
+			errlog.Logf("[Store] failed to store image vector %d for doc=%s file=%q: %v", i, docID, docName, err)
 		} else {
 			imageCount++
 		}
@@ -1105,6 +1113,7 @@ func (dm *DocumentManager) processURL(docID, url string, productID string) (*Imp
 			vec, err := dm.embeddingService.EmbedImageURL(img.URL)
 			if err != nil {
 				log.Printf("Warning: failed to embed HTML image %d (%s): %v", i, img.Alt, err)
+				errlog.Logf("[Embed] failed to embed HTML image %d (%s) for doc=%s url=%q: %v", i, img.Alt, docID, url, err)
 				continue
 			}
 			imgChunk := []vectorstore.VectorChunk{{
@@ -1118,6 +1127,7 @@ func (dm *DocumentManager) processURL(docID, url string, productID string) (*Imp
 			}}
 			if err := dm.vectorStore.Store(docID, imgChunk); err != nil {
 				log.Printf("Warning: failed to store HTML image vector %d: %v", i, err)
+				errlog.Logf("[Store] failed to store HTML image vector %d for doc=%s url=%q: %v", i, docID, url, err)
 			} else {
 				imageCount++
 			}
@@ -1465,30 +1475,32 @@ func (dm *DocumentManager) GetDocumentReview(docID string) (*ReviewData, error) 
 		result.Segments = append(result.Segments, seg)
 	}
 
-	// Also query OCR description chunks (chunk_index >= 20000)
-	ocrRows, err := dm.db.Query(
-		`SELECT chunk_text, chunk_index FROM chunks WHERE document_id = ? AND chunk_index >= 20000 ORDER BY chunk_index ASC`,
-		docID,
-	)
-	if err == nil {
-		defer ocrRows.Close()
-		for ocrRows.Next() {
-			var text string
-			var idx int
-			if err := ocrRows.Scan(&text, &idx); err != nil {
-				continue
+	// Also query OCR description chunks (chunk_index >= 20000) — only for non-PPT documents
+	if docInfo.Type != "ppt" {
+		ocrRows, err := dm.db.Query(
+			`SELECT chunk_text, chunk_index FROM chunks WHERE document_id = ? AND chunk_index >= 20000 ORDER BY chunk_index ASC`,
+			docID,
+		)
+		if err == nil {
+			defer ocrRows.Close()
+			for ocrRows.Next() {
+				var text string
+				var idx int
+				if err := ocrRows.Scan(&text, &idx); err != nil {
+					continue
+				}
+				result.Segments = append(result.Segments, ReviewSegment{
+					Type:    "ocr_description",
+					Content: text,
+				})
 			}
-			result.Segments = append(result.Segments, ReviewSegment{
-				Type:    "ocr_description",
-				Content: text,
-			})
 		}
 	}
 
 	// For PPT documents: query slide chunks (each slide stored as a chunk with image_url)
 	if docInfo.Type == "ppt" {
 		slideRows, err := dm.db.Query(
-			`SELECT chunk_text, chunk_index, COALESCE(image_url, '') FROM chunks WHERE document_id = ? ORDER BY chunk_index ASC`,
+			`SELECT chunk_text, chunk_index, COALESCE(image_url, '') FROM chunks WHERE document_id = ? AND chunk_index < 20000 ORDER BY chunk_index ASC`,
 			docID,
 		)
 		if err == nil {
