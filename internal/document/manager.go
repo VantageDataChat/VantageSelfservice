@@ -400,42 +400,58 @@ func resizeImageForOCR(imgData []byte) []byte {
 
 // resizeImageForEmbedding resizes an image so its total pixel count stays within
 // the embedding API limit (36 million pixels). Uses a safe margin of 35M pixels.
-// Returns the original data unchanged if already within bounds or if decoding fails.
+// Returns nil if the image format is not supported (e.g. EMF/WMF metafiles).
+// Returns the original data unchanged if already within bounds.
 const embeddingMaxPixels = 35_000_000
 
 func resizeImageForEmbedding(imgData []byte) []byte {
 	src, _, err := image.Decode(bytes.NewReader(imgData))
 	if err != nil {
-		return imgData
+		// Image format not supported by Go (e.g. EMF/WMF from legacy PPT).
+		// Return nil so the caller can skip this image.
+		return nil
 	}
 
 	bounds := src.Bounds()
 	w, h := bounds.Dx(), bounds.Dy()
 	totalPixels := w * h
 
-	if totalPixels <= embeddingMaxPixels {
+	needsResize := totalPixels > embeddingMaxPixels
+
+	// Check if the raw bytes are a clean JPEG or PNG that the embedding API
+	// can accept directly.  Legacy PPT extraction sometimes produces data
+	// with extra header bytes that confuse external APIs, so we re-encode
+	// whenever the magic bytes don't match a standard image format.
+	isCleanImage := (len(imgData) >= 3 && imgData[0] == 0xFF && imgData[1] == 0xD8 && imgData[2] == 0xFF) || // JPEG
+		(len(imgData) >= 4 && string(imgData[:4]) == "\x89PNG") // PNG
+
+	if !needsResize && isCleanImage {
 		return imgData
 	}
 
-	// Scale down preserving aspect ratio so total pixels <= embeddingMaxPixels
-	scale := math.Sqrt(float64(embeddingMaxPixels) / float64(totalPixels))
-	newW := int(float64(w) * scale)
-	newH := int(float64(h) * scale)
-	if newW < 1 {
-		newW = 1
+	var dst image.Image = src
+	if needsResize {
+		scale := math.Sqrt(float64(embeddingMaxPixels) / float64(totalPixels))
+		newW := int(float64(w) * scale)
+		newH := int(float64(h) * scale)
+		if newW < 1 {
+			newW = 1
+		}
+		if newH < 1 {
+			newH = 1
+		}
+		log.Printf("[Embed] resizing image from %dx%d (%d px) to %dx%d for embedding API limit", w, h, totalPixels, newW, newH)
+		canvas := image.NewRGBA(image.Rect(0, 0, newW, newH))
+		draw.BiLinear.Scale(canvas, canvas.Bounds(), src, bounds, draw.Over, nil)
+		dst = canvas
 	}
-	if newH < 1 {
-		newH = 1
-	}
-
-	log.Printf("[Embed] resizing image from %dx%d (%d px) to %dx%d for embedding API limit", w, h, totalPixels, newW, newH)
-
-	dst := image.NewRGBA(image.Rect(0, 0, newW, newH))
-	draw.BiLinear.Scale(dst, dst.Bounds(), src, bounds, draw.Over, nil)
 
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 90}); err != nil {
-		return imgData
+		if isCleanImage {
+			return imgData
+		}
+		return nil
 	}
 	return buf.Bytes()
 }
@@ -959,7 +975,12 @@ func (dm *DocumentManager) processFile(docID, docName string, fileData []byte, f
 		// For embedding API: use base64 data URL for embedded images (external API can't access local paths)
 		embedURL := imgURL
 		if embedURL == "" && len(img.Data) > 0 {
-			embedURL = imageToBase64DataURL(resizeImageForEmbedding(img.Data))
+			resized := resizeImageForEmbedding(img.Data)
+			if resized == nil {
+				log.Printf("Warning: skipping unsupported image format %d (%s)", i, img.Alt)
+				continue
+			}
+			embedURL = imageToBase64DataURL(resized)
 		}
 		if embedURL == "" {
 			continue

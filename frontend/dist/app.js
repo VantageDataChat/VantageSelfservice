@@ -2561,6 +2561,8 @@
                     var resp = JSON.parse(xhr.responseText);
                     if (resp && resp.status === 'failed') {
                         showAdminToast(i18n.t('admin_doc_upload_failed') + (resp.error ? ' - ' + resp.error : ''), 'error');
+                    } else if (resp && resp.status === 'processing') {
+                        showAdminToast(i18n.t('admin_doc_upload_success') + ' - ' + (i18n.t('admin_doc_status_processing') || '处理中...'), 'info');
                     } else {
                         var msg = i18n.t('admin_doc_upload_success');
                         if (resp && resp.stats) {
@@ -2709,6 +2711,11 @@
         }
         // Restore previous selection if still valid
         if (currentVal) select.value = currentVal;
+        // Bind change event to refresh document list when product filter changes
+        if (selectId === 'doc-product-select' && !select._boundChange) {
+            select._boundChange = true;
+            select.addEventListener('change', function () { loadDocumentList(); });
+        }
     }
 
     function getDocProductID() {
@@ -2731,9 +2738,15 @@
     }
 
     var _docPollTimer = null;
+    var _docListLoading = false;
 
     function loadDocumentList() {
-        adminFetch('/api/documents')
+        if (_docListLoading) return;
+        _docListLoading = true;
+        var url = '/api/documents';
+        var pid = getDocProductID();
+        if (pid) url += '?product_id=' + encodeURIComponent(pid);
+        adminFetch(url)
             .then(function (res) {
                 if (!res.ok) throw new Error(i18n.t('admin_doc_load_failed'));
                 return res.json();
@@ -2746,6 +2759,9 @@
             })
             .catch(function () {
                 renderDocumentList([]);
+            })
+            .finally(function () {
+                _docListLoading = false;
             });
     }
 
@@ -2756,7 +2772,7 @@
             if (docs[i].status === 'processing') { hasProcessing = true; break; }
         }
         if (hasProcessing) {
-            _docPollTimer = setTimeout(function () { loadDocumentList(); }, 3000);
+            _docPollTimer = setTimeout(function () { loadDocumentList(); }, 2000);
         }
     }
 

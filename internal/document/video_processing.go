@@ -331,7 +331,12 @@ func (dm *DocumentManager) embedSingleKeyframe(docID, docName, productID string,
 		return false
 	}
 
-	dataURL := imageToBase64DataURL(resizeImageForEmbedding(kf.Data))
+	resized := resizeImageForEmbedding(kf.Data)
+	if resized == nil {
+		log.Printf("Warning: keyframe %d has unsupported image format, skipping", i)
+		return false
+	}
+	dataURL := imageToBase64DataURL(resized)
 
 	// Per-frame timeout for embedding API call
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
