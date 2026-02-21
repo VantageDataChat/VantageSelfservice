@@ -646,17 +646,65 @@ go build -o askflow .
 
 ### 远程部署（Windows → Linux）
 
-项目提供 `build.cmd` 脚本，通过 PuTTY 工具链（plink/pscp）实现一键打包、上传、远程编译和重启。
+项目提供 [`build.cmd`](./build.cmd) 脚本，在 Windows 本地打包源码，通过 SSH/SCP 上传到 Linux 服务器进行编译、部署和重启，全程一键完成。
+
+#### 前置条件
+
+| 项目 | 说明 |
+|------|------|
+| Windows 本地 | 需安装 `tar`（Windows 10+ 自带）和 `sshpass`（脚本中默认路径 `C:\Users\<user>\sshpass\sshpass`） |
+| Linux 服务器 | 需安装 Go 1.25+、nginx（可选，用于反向代理） |
+| 网络 | 本地可通过 SSH（22 端口）访问目标服务器 |
+
+#### 配置
+
+> ⚠️ **首次使用前，请务必打开 [`build.cmd`](./build.cmd) 修改脚本顶部的服务器连接信息，将其替换为你自己的服务器地址、用户名和部署目录。** 同时检查 `sshpass` 的路径是否与本地安装位置一致。
 
 ```cmd
+set SERVER=your-server.example.com   &REM ← 改为你的服务器地址
+set USER=root                        &REM ← 改为你的 SSH 用户名
+set REMOTE_DIR=/root/vantageselfservice  &REM ← 改为你的远程部署目录
+set BINARY_NAME=askflow              &REM    编译产物名称
+set SSHPASS=C:\Users\<user>\sshpass\sshpass  &REM ← 改为你的 sshpass 路径
+```
+
+#### 使用方式
+
+```cmd
+REM 方式一：交互式输入密码
+build.cmd
+
+REM 方式二：通过环境变量传入密码（适合 CI/CD）
+set DEPLOY_PASS=your_password
 build.cmd
 ```
 
-该脚本会：
-1. 打包项目文件为 `deploy.tar.gz`
-2. 通过 SCP 上传到远程服务器
-3. 在远程服务器上解压并编译
-4. 执行 `start.sh` 重启服务
+#### 执行流程
+
+1. 打包源码（`*.go`、`go.mod`、`go.sum`、`internal/`、`frontend/`、`sqlite-vec/`）为 `deploy.tar.gz`
+2. 通过 SCP 上传 `deploy.tar.gz` 和 [`start.sh`](./start.sh) 到远程服务器
+3. 在远程服务器上解压并执行 `go build` 编译
+4. 将编译产物打包为 `askflow_release_linux.tar.gz` 并下载回本地（可用于分发）
+5. 执行 `start.sh` 重启服务（自动停止旧进程、启动新进程、检测端口 8080 是否就绪）
+6. 更新远程 `config.json` 中的 ffmpeg 路径
+7. 清理 nginx 缓存相关配置并 reload
+
+#### 部署产物
+
+部署完成后，本地目录会生成 [`askflow_release_linux.tar.gz`](./askflow_release_linux.tar.gz)，包含编译好的 Linux 二进制文件和前端资源，可直接用于其他 Linux 服务器的离线部署：
+
+```bash
+# 在目标 Linux 服务器上
+tar -xzf askflow_release_linux.tar.gz
+./askflow
+```
+
+#### 注意事项
+
+- 首次部署时脚本会自动接受服务器 SSH 主机密钥
+- 部署过程中服务会短暂中断（停止旧进程 → 编译 → 启动新进程）
+- `start.sh` 包含从旧版本（helpdesk）到新版本（askflow）的自动迁移逻辑
+- 如果启动失败且检测到配置文件损坏，`start.sh` 会自动删除 `config.json` 并重试
 
 ### 数据备份
 

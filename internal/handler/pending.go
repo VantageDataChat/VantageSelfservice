@@ -81,7 +81,7 @@ func HandlePendingCreate(app *App) http.HandlerFunc {
 			WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
-		// Validate user session �?use the authenticated user ID, not the client-provided one
+		// Validate user session — use the authenticated user ID, not the client-provided one
 		authenticatedUserID, err := GetUserSession(app, r)
 		if err != nil {
 			WriteError(w, http.StatusUnauthorized, err.Error())

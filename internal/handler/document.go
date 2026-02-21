@@ -207,12 +207,12 @@ func HandlePublicDocumentDownload(app *App) http.HandlerFunc {
 			token = r.URL.Query().Get("token")
 		}
 		if token == "" {
-			WriteError(w, http.StatusUnauthorized, "未登�?)
+			WriteError(w, http.StatusUnauthorized, "未登录")
 			return
 		}
 		session, sErr := app.sessionManager.ValidateSession(token)
 		if sErr != nil {
-			WriteError(w, http.StatusUnauthorized, "会话已过�?)
+			WriteError(w, http.StatusUnauthorized, "会话已过期")
 			return
 		}
 		_ = session
@@ -229,13 +229,13 @@ func HandlePublicDocumentDownload(app *App) http.HandlerFunc {
 		// Check product allows download
 		p, pErr := app.GetProduct(productID)
 		if pErr != nil || p == nil || !p.AllowDownload {
-			WriteError(w, http.StatusForbidden, "该产品不允许下载参考文�?)
+			WriteError(w, http.StatusForbidden, "该产品不允许下载参考文档")
 			return
 		}
 		// Check document type is downloadable
 		docInfo, dErr := app.GetDocumentInfo(docID)
 		if dErr != nil {
-			WriteError(w, http.StatusNotFound, "文档未找�?)
+			WriteError(w, http.StatusNotFound, "文档未找到")
 			return
 		}
 		docType := strings.ToLower(docInfo.Type)
@@ -250,7 +250,7 @@ func HandlePublicDocumentDownload(app *App) http.HandlerFunc {
 		}
 		filePath, fileName, fErr := app.docManager.GetFilePath(docID)
 		if fErr != nil {
-			WriteError(w, http.StatusNotFound, "文件未找�?)
+			WriteError(w, http.StatusNotFound, "文件未找到")
 			return
 		}
 		// Verify file path stays within expected data directory
@@ -301,7 +301,7 @@ func HandleDocumentByID(app *App) http.HandlerFunc {
 			}
 			filePath, fileName, err := app.docManager.GetFilePath(docID)
 			if err != nil {
-				WriteError(w, http.StatusNotFound, "文件未找�?)
+				WriteError(w, http.StatusNotFound, "文件未找到")
 				return
 			}
 			// Verify file path stays within expected data directory
@@ -342,7 +342,7 @@ func HandleDocumentByID(app *App) http.HandlerFunc {
 			}
 			review, err := app.GetDocumentReview(docID)
 			if err != nil {
-				WriteError(w, http.StatusNotFound, "文档未找�?)
+				WriteError(w, http.StatusNotFound, "文档未找到")
 				return
 			}
 			WriteJSON(w, http.StatusOK, review)
@@ -401,7 +401,7 @@ func HandleBatchImport(app *App) http.HandlerFunc {
 				}
 			}
 			if !hasPerm {
-				WriteError(w, http.StatusForbidden, "无批量导入权�?)
+				WriteError(w, http.StatusForbidden, "无批量导入权限")
 				return
 			}
 		}
@@ -423,7 +423,7 @@ func HandleBatchImport(app *App) http.HandlerFunc {
 		if req.ProductID != "" {
 			p, err := app.productService.GetByID(req.ProductID)
 			if err != nil || p == nil {
-				WriteError(w, http.StatusBadRequest, fmt.Sprintf("产品不存�?(ID: %s)", req.ProductID))
+				WriteError(w, http.StatusBadRequest, fmt.Sprintf("产品不存在(ID: %s)", req.ProductID))
 				return
 			}
 		}

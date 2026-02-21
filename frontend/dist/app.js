@@ -794,6 +794,43 @@
             });
     };
 
+    // --- Frontend Anonymous Login ---
+    window.handleAnonymousFrontendLogin = function () {
+        var btn = document.getElementById('anonymous-frontend-login-btn');
+        if (btn) btn.disabled = true;
+        var errorEl = document.getElementById('user-login-error');
+        if (errorEl) errorEl.classList.add('hidden');
+
+        fetch('/api/auth/anonymous-login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        })
+            .then(function (res) {
+                if (!res.ok) {
+                    return res.json().then(function (d) { throw new Error(d.error || '匿名登录失败'); });
+                }
+                return res.json();
+            })
+            .then(function (data) {
+                if (data.session && data.user) {
+                    saveSession(data.session, data.user);
+                    navigate('/chat');
+                } else {
+                    throw new Error('匿名登录失败');
+                }
+            })
+            .catch(function (err) {
+                if (errorEl) {
+                    errorEl.textContent = err.message || '匿名登录失败';
+                    errorEl.classList.remove('hidden');
+                }
+            })
+            .finally(function () {
+                if (btn) btn.disabled = false;
+            });
+    };
+
     // Allow Enter key to submit admin login/setup
     document.addEventListener('keydown', function (e) {
         if (e.key === 'Enter') {
@@ -3280,8 +3317,10 @@
 
                 setVal('cfg-admin-login-route', admin.login_route || '/admin');
 
-                var anonSelect = document.getElementById('cfg-admin-anonymous-mode');
+                var anonSelect = document.getElementById('cfg-anon-backend');
                 if (anonSelect) anonSelect.value = admin.anonymous_mode ? 'true' : 'false';
+                var anonFrontendSelect = document.getElementById('cfg-anon-frontend');
+                if (anonFrontendSelect) anonFrontendSelect.value = admin.anonymous_frontend ? 'true' : 'false';
 
                 setVal('cfg-product-name', cfg.product_name || '');
                 setVal('cfg-product-intro', cfg.product_intro || '');
@@ -3521,9 +3560,6 @@
             updates['admin.login_route'] = adminLoginRouteVal;
         }
 
-        var adminAnonMode = getVal('cfg-admin-anonymous-mode');
-        updates['admin.anonymous_mode'] = adminAnonMode === 'true';
-
         var productName = getVal('cfg-product-name');
         updates['product_name'] = productName;
 
@@ -3574,6 +3610,30 @@
             showAdminToast(i18n.t('admin_settings_no_changes'), 'info');
             return;
         }
+
+        adminFetch('/api/config', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(updates)
+        })
+        .then(function (res) {
+            if (!res.ok) throw new Error(i18n.t('admin_settings_save_failed'));
+            showAdminToast(i18n.t('admin_settings_saved'), 'success');
+            loadAdminSettings();
+        })
+        .catch(function (err) {
+            showAdminToast(err.message || i18n.t('admin_settings_save_failed'), 'error');
+        });
+    };
+
+    // --- Anonymous Mode Settings ---
+
+    window.saveAnonymousSettings = function () {
+        var updates = {};
+        var anonBackend = getVal('cfg-anon-backend');
+        updates['admin.anonymous_mode'] = anonBackend === 'true';
+        var anonFrontend = getVal('cfg-anon-frontend');
+        updates['admin.anonymous_frontend'] = anonFrontend === 'true';
 
         adminFetch('/api/config', {
             method: 'PUT',
@@ -5118,6 +5178,15 @@
             .then(function (res) { return res.json(); })
             .then(function (data) {
                 if (data.login_route) adminLoginRoute = data.login_route;
+                // Show/hide frontend anonymous login button
+                var anonFrontendBtn = document.getElementById('anonymous-frontend-login-btn');
+                if (anonFrontendBtn) {
+                    if (data.anonymous_frontend) {
+                        anonFrontendBtn.classList.remove('hidden');
+                    } else {
+                        anonFrontendBtn.classList.add('hidden');
+                    }
+                }
             })
             .catch(function () { /* use default */ });
 

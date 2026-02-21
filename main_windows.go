@@ -74,7 +74,7 @@ func handleRemove() {
 	if err != nil {
 		log.Fatalf("Failed to remove service: %v", err)
 	}
-	fmt.Println("�?Service removed successfully")
+	fmt.Println("✓ Service removed successfully")
 }
 
 // handleStart starts the Windows service.
@@ -83,7 +83,7 @@ func handleStart() {
 	if err != nil {
 		log.Fatalf("Failed to start service: %v", err)
 	}
-	fmt.Println("�?Service started successfully")
+	fmt.Println("✓ Service started successfully")
 }
 
 // handleStop stops the Windows service.
@@ -92,7 +92,7 @@ func handleStop() {
 	if err != nil {
 		log.Fatalf("Failed to stop service: %v", err)
 	}
-	fmt.Println("�?Service stopped successfully")
+	fmt.Println("✓ Service stopped successfully")
 }
 
 // runAsService runs the application as a Windows service.

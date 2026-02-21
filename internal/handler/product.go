@@ -34,7 +34,7 @@ func HandleProducts(app *App) http.HandlerFunc {
 				return
 			}
 			if role != "super_admin" {
-				WriteError(w, http.StatusForbidden, "仅超级管理员可管理产�?)
+				WriteError(w, http.StatusForbidden, "仅超级管理员可管理产品")
 				return
 			}
 			var req struct {
@@ -82,7 +82,7 @@ func HandleProductByID(app *App) http.HandlerFunc {
 				return
 			}
 			if role != "super_admin" {
-				WriteError(w, http.StatusForbidden, "仅超级管理员可管理产�?)
+				WriteError(w, http.StatusForbidden, "仅超级管理员可管理产品")
 				return
 			}
 			var req struct {
@@ -110,7 +110,7 @@ func HandleProductByID(app *App) http.HandlerFunc {
 				return
 			}
 			if role != "super_admin" {
-				WriteError(w, http.StatusForbidden, "仅超级管理员可管理产�?)
+				WriteError(w, http.StatusForbidden, "仅超级管理员可管理产品")
 				return
 			}
 			confirm := r.URL.Query().Get("confirm")
@@ -118,7 +118,7 @@ func HandleProductByID(app *App) http.HandlerFunc {
 				hasData, err := app.HasProductDocumentsOrKnowledge(id)
 				if err != nil {
 					log.Printf("[Products] check data error for %s: %v", id, err)
-					WriteError(w, http.StatusInternalServerError, "检查产品数据失�?)
+					WriteError(w, http.StatusInternalServerError, "检查产品数据失败")
 					return
 				}
 				if hasData {

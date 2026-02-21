@@ -120,10 +120,11 @@ type VideoConfig struct {
 
 // AdminConfig holds admin authentication configuration.
 type AdminConfig struct {
-	Username      string `json:"username"`
-	PasswordHash  string `json:"password_hash"`
-	LoginRoute    string `json:"login_route"`
-	AnonymousMode bool   `json:"anonymous_mode"`
+	Username          string `json:"username"`
+	PasswordHash      string `json:"password_hash"`
+	LoginRoute        string `json:"login_route"`
+	AnonymousMode     bool   `json:"anonymous_mode"`
+	AnonymousFrontend bool   `json:"anonymous_frontend"`
 }
 
 // ConfigManager manages loading, saving, and updating configuration.
@@ -529,6 +530,12 @@ func (cm *ConfigManager) applyUpdate(key string, val interface{}) error {
 			return errors.New("expected boolean")
 		}
 		cm.config.Admin.AnonymousMode = b
+	case "admin.anonymous_frontend":
+		b, ok := val.(bool)
+		if !ok {
+			return errors.New("expected boolean")
+		}
+		cm.config.Admin.AnonymousFrontend = b
 
 	// SMTP fields
 	case "smtp.host":

@@ -126,7 +126,7 @@ func HandleAdminLogin(app *App) http.HandlerFunc {
 			}
 		}
 		if !captchaValid {
-			WriteError(w, http.StatusBadRequest, "验证码错�?)
+			WriteError(w, http.StatusBadRequest, "验证码错误")
 			return
 		}
 		resp, err := app.AdminLogin(req.Username, req.Password, middleware.GetClientIP(r))
@@ -178,6 +178,22 @@ func HandleAnonymousLogin(app *App) http.HandlerFunc {
 	}
 }
 
+// HandleAnonymousFrontendLogin allows anonymous access to the user-facing chat when enabled.
+func HandleAnonymousFrontendLogin(app *App) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		resp, err := app.AnonymousFrontendLogin()
+		if err != nil {
+			WriteError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		WriteJSON(w, http.StatusOK, resp)
+	}
+}
+
 // HandleAdminStatus returns whether the admin account has been configured.
 func HandleAdminStatus(app *App) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -188,14 +204,17 @@ func HandleAdminStatus(app *App) http.HandlerFunc {
 		cfg := app.configManager.Get()
 		var loginRoute string
 		var anonymousMode bool
+		var anonymousFrontend bool
 		if cfg != nil {
 			loginRoute = cfg.Admin.LoginRoute
 			anonymousMode = cfg.Admin.AnonymousMode
+			anonymousFrontend = cfg.Admin.AnonymousFrontend
 		}
 		WriteJSON(w, http.StatusOK, map[string]interface{}{
-			"configured":     app.IsAdminConfigured(),
-			"login_route":    loginRoute,
-			"anonymous_mode": anonymousMode,
+			"configured":         app.IsAdminConfigured(),
+			"login_route":        loginRoute,
+			"anonymous_mode":     anonymousMode,
+			"anonymous_frontend": anonymousFrontend,
 		})
 	}
 }
@@ -243,7 +262,7 @@ func HandleRegister(app *App) http.HandlerFunc {
 			return
 		}
 		if !ValidateCaptcha(req.CaptchaID, req.CaptchaAnswer) {
-			WriteError(w, http.StatusBadRequest, "验证码错�?)
+			WriteError(w, http.StatusBadRequest, "验证码错误")
 			return
 		}
 		baseURL := GetBaseURL(r)
@@ -308,7 +327,7 @@ func HandleUserLogin(app *App) http.HandlerFunc {
 			return
 		}
 		if !ValidateCaptcha(req.CaptchaID, req.CaptchaAnswer) {
-			WriteError(w, http.StatusBadRequest, "验证码错�?)
+			WriteError(w, http.StatusBadRequest, "验证码错误")
 			return
 		}
 		resp, err := app.UserLogin(req.Email, req.Password, middleware.GetClientIP(r))
@@ -330,7 +349,7 @@ func HandleVerifyEmail(app *App) http.HandlerFunc {
 		token := r.URL.Query().Get("token")
 		// Validate token format (32 hex chars)
 		if len(token) != 32 || !IsValidHexID(token) {
-			WriteError(w, http.StatusBadRequest, "无效的验证链�?)
+			WriteError(w, http.StatusBadRequest, "无效的验证链接")
 			return
 		}
 		if err := app.VerifyEmail(token); err != nil {
@@ -341,7 +360,7 @@ func HandleVerifyEmail(app *App) http.HandlerFunc {
 	}
 }
 
-// HandleForgotPassword handles POST /api/auth/forgot-password �?sends a password reset email.
+// HandleForgotPassword handles POST /api/auth/forgot-password — sends a password reset email.
 func HandleForgotPassword(app *App) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -364,7 +383,7 @@ func HandleForgotPassword(app *App) http.HandlerFunc {
 	}
 }
 
-// HandleResetPassword handles POST /api/auth/reset-password �?resets the password using a token.
+// HandleResetPassword handles POST /api/auth/reset-password — resets the password using a token.
 func HandleResetPassword(app *App) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -380,7 +399,7 @@ func HandleResetPassword(app *App) http.HandlerFunc {
 			return
 		}
 		if len(req.Token) != 32 || !IsValidHexID(req.Token) {
-			WriteError(w, http.StatusBadRequest, "无效的重置链�?)
+			WriteError(w, http.StatusBadRequest, "无效的重置链接")
 			return
 		}
 		if err := app.ResetPassword(req.Token, req.Password); err != nil {
@@ -391,7 +410,7 @@ func HandleResetPassword(app *App) http.HandlerFunc {
 	}
 }
 
-// HandleSNLogin handles POST /api/auth/sn-login �?verifies a license server token
+// HandleSNLogin handles POST /api/auth/sn-login — verifies a license server token
 // and returns a one-time login ticket.
 func HandleSNLogin(app *App) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -414,7 +433,7 @@ func HandleSNLogin(app *App) http.HandlerFunc {
 	}
 }
 
-// HandleTicketLogin handles GET /auth/ticket-login?ticket=xxx �?redirects to the
+// HandleTicketLogin handles GET /auth/ticket-login?ticket=xxx — redirects to the
 // SPA with the ticket as a query parameter so the frontend can exchange it via JS.
 func HandleTicketLogin(app *App) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -434,13 +453,13 @@ func HandleTicketLogin(app *App) http.HandlerFunc {
 				return
 			}
 		}
-		// Pass ticket to frontend �?the SPA will call /api/auth/ticket-exchange to
+		// Pass ticket to frontend — the SPA will call /api/auth/ticket-exchange to
 		// validate it and store the session in localStorage (same pattern as OAuth).
 		http.Redirect(w, r, "/?ticket="+ticket, http.StatusFound)
 	}
 }
 
-// HandleTicketExchange handles POST /api/auth/ticket-exchange �?validates a one-time
+// HandleTicketExchange handles POST /api/auth/ticket-exchange — validates a one-time
 // login ticket and returns {session, user} JSON for the frontend to store in localStorage.
 func HandleTicketExchange(app *App) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

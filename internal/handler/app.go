@@ -466,6 +466,41 @@ func (a *App) AnonymousLogin() (*AdminLoginResponse, error) {
 	return &AdminLoginResponse{Session: session, Role: "anonymous_viewer"}, nil
 }
 
+// AnonymousFrontendLogin creates a user session for anonymous frontend access when enabled.
+func (a *App) AnonymousFrontendLogin() (*UserLoginResponse, error) {
+	cfg := a.configManager.Get()
+	if cfg == nil {
+		return nil, fmt.Errorf("系统配置未加载")
+	}
+	if !cfg.Admin.AnonymousFrontend {
+		return nil, fmt.Errorf("前端匿名模式未开启")
+	}
+
+	// Ensure anonymous_user record exists
+	a.db.Exec(
+		`INSERT OR IGNORE INTO users (id, email, name, provider, provider_id) VALUES (?, ?, ?, ?, ?)`,
+		"anonymous_user", "anonymous_user@internal", "匿名用户", "anonymous", "anonymous_user",
+	)
+
+	// Session rotation: clean up old anonymous user sessions
+	_ = a.sessionManager.DeleteSessionsByUserID("anonymous_user")
+
+	session, err := a.sessionManager.CreateSession("anonymous_user")
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("[Auth] anonymous frontend user login")
+	return &UserLoginResponse{
+		Session: session,
+		User: &UserInfo{
+			ID:       "anonymous_user",
+			Email:    "anonymous_user@internal",
+			Name:     "匿名用户",
+			Provider: "anonymous",
+		},
+	}, nil
+}
+
 // ensureAdminUser inserts the admin user record into the users table if it doesn't exist.
 func (a *App) ensureAdminUser() error {
 	_, err := a.db.Exec(

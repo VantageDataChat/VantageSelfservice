@@ -24,7 +24,7 @@ func HandleAdminUsers(app *App) http.HandlerFunc {
 		switch r.Method {
 		case http.MethodGet:
 			if role != "super_admin" {
-				WriteError(w, http.StatusForbidden, "仅超级管理员可管理用�?)
+				WriteError(w, http.StatusForbidden, "仅超级管理员可管理用户")
 				return
 			}
 			users, err := app.ListAdminUsers()
@@ -40,7 +40,7 @@ func HandleAdminUsers(app *App) http.HandlerFunc {
 
 		case http.MethodPost:
 			if role != "super_admin" {
-				WriteError(w, http.StatusForbidden, "仅超级管理员可管理用�?)
+				WriteError(w, http.StatusForbidden, "仅超级管理员可管理用户")
 				return
 			}
 			var req struct {
@@ -83,7 +83,7 @@ func HandleAdminUserByID(app *App) http.HandlerFunc {
 			return
 		}
 		if role != "super_admin" {
-			WriteError(w, http.StatusForbidden, "仅超级管理员可管理用�?)
+			WriteError(w, http.StatusForbidden, "仅超级管理员可管理用户")
 			return
 		}
 
@@ -148,7 +148,7 @@ func HandleAdminBans(app *App) http.HandlerFunc {
 			return
 		}
 		if role != "super_admin" {
-			WriteError(w, http.StatusForbidden, "仅超级管理员可管理登录限�?)
+			WriteError(w, http.StatusForbidden, "仅超级管理员可管理登录限制")
 			return
 		}
 		bans := app.loginLimiter.ListBans()
@@ -172,7 +172,7 @@ func HandleAdminUnban(app *App) http.HandlerFunc {
 			return
 		}
 		if role != "super_admin" {
-			WriteError(w, http.StatusForbidden, "仅超级管理员可管理登录限�?)
+			WriteError(w, http.StatusForbidden, "仅超级管理员可管理登录限制")
 			return
 		}
 		var req struct {
@@ -201,7 +201,7 @@ func HandleAdminAddBan(app *App) http.HandlerFunc {
 			return
 		}
 		if role != "super_admin" {
-			WriteError(w, http.StatusForbidden, "仅超级管理员可管理登录限�?)
+			WriteError(w, http.StatusForbidden, "仅超级管理员可管理登录限制")
 			return
 		}
 		var req struct {
@@ -222,7 +222,7 @@ func HandleAdminAddBan(app *App) http.HandlerFunc {
 			req.Days = 1
 		}
 		if req.Reason == "" {
-			req.Reason = "管理员手动封�?
+			req.Reason = "管理员手动封禁"
 		}
 		app.loginLimiter.AddManualBan(req.Username, req.IP, req.Reason, time.Duration(req.Days)*24*time.Hour)
 		WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})

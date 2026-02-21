@@ -510,7 +510,7 @@ func (p *Parser) Parse(videoPath string) (*ParseResult, error) {
 	// 探测视频时长
 	result.Duration = p.ProbeDuration(videoPath)
 
-	// 音频转录（仅�� RapidSpeech 已配置时执行）
+	// 音频转录（仅在 RapidSpeech 已配置时执行）
 	if p.RapidSpeechPath != "" && p.RapidSpeechModel != "" {
 		audioPath := filepath.Join(tempDir, "audio.wav")
 		audioErr := p.ExtractAudio(videoPath, audioPath)
