@@ -1364,7 +1364,7 @@
             var productId = localStorage.getItem('askflow_product_id') || '';
             html += '<div class="chat-sources">';
             html += '<button class="chat-sources-toggle" onclick="toggleSources(\'' + srcId + '\', this)">';
-            html += '<span class="arrow">▶</span> ' + i18n.t('chat_source_toggle') + '（' + msg.sources.length + '）';
+            html += '<span class="arrow">▶</span> ' + i18n.t('chat_source_toggle') + ' (' + msg.sources.length + ')';
             html += '</button>';
             html += '<ul id="' + srcId + '" class="chat-sources-list">';
             for (var j = 0; j < msg.sources.length; j++) {
@@ -1390,7 +1390,7 @@
                     }
                     var srcMediaIdx = window._mediaRegistry.length;
                     window._mediaRegistry.push({ url: srcMediaUrl, isAudio: srcIsAudio, startTime: srcStart, name: src.document_name || 'media', segments: srcSegs });
-                    html += '<button class="chat-source-play-btn" onclick="event.stopPropagation();window.openMediaModal(' + srcMediaIdx + ')" title="' + (srcIsAudio ? '播放音频' : '播放视频') + '">' + (srcIsAudio ? '🎵' : '▶️') + '</button>';
+                    html += '<button class="chat-source-play-btn" onclick="event.stopPropagation();window.openMediaModal(' + srcMediaIdx + ')" title="' + (srcIsAudio ? i18n.t('chat_play_audio') : i18n.t('chat_play_video')) + '">' + (srcIsAudio ? '🎵' : '▶️') + '</button>';
                 }
                 if (src.start_time > 0 || src.end_time > 0) {
                     var timeLabel = formatMediaTime(src.start_time || 0);
@@ -3660,10 +3660,10 @@
     window.loadRecentLogs = function () {
         var content = document.getElementById('log-viewer-content');
         if (!content) return;
-        content.textContent = '加载中...';
+        content.textContent = i18n.t('admin_doc_review_loading');
         adminFetch('/api/logs/recent?lines=50')
             .then(function (res) {
-                if (!res.ok) throw new Error('加载失败');
+                if (!res.ok) throw new Error(i18n.t('admin_doc_load_failed'));
                 return res.json();
             })
             .then(function (data) {
@@ -3691,7 +3691,7 @@
                 if (viewer) viewer.scrollTop = viewer.scrollHeight;
             })
             .catch(function (err) {
-                content.textContent = '加载日志失败: ' + (err.message || '未知错误');
+                content.textContent = i18n.t('admin_logs_load_failed') + ': ' + (err.message || i18n.t('admin_logs_unknown_error'));
             });
     };
 
@@ -3700,7 +3700,7 @@
         if (!input) return;
         var val = parseInt(input.value, 10);
         if (isNaN(val) || val < 1 || val > 10240) {
-            showAdminToast('轮转大小必须在 1-10240 MB 之间', 'error');
+            showAdminToast(i18n.t('admin_logs_rotation_range_error'), 'error');
             return;
         }
         adminFetch('/api/logs/rotation', {
@@ -3709,18 +3709,18 @@
             body: JSON.stringify({ rotation_mb: val })
         })
         .then(function (res) {
-            if (!res.ok) return res.json().then(function (d) { throw new Error(d.error || '保存失败'); });
-            showAdminToast('日志轮转大小已保存', 'success');
+            if (!res.ok) return res.json().then(function (d) { throw new Error(d.error || i18n.t('admin_logs_save_failed')); });
+            showAdminToast(i18n.t('admin_logs_rotation_saved'), 'success');
         })
         .catch(function (err) {
-            showAdminToast(err.message || '保存失败', 'error');
+            showAdminToast(err.message || i18n.t('admin_logs_save_failed'), 'error');
         });
     };
 
     window.downloadLogs = function () {
         adminFetch('/api/logs/download')
         .then(function (res) {
-            if (!res.ok) throw new Error('下载失败');
+            if (!res.ok) throw new Error(i18n.t('admin_logs_download_failed'));
             return res.blob();
         })
         .then(function (blob) {
@@ -3732,10 +3732,10 @@
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
-            showAdminToast('日志下载完成', 'success');
+            showAdminToast(i18n.t('admin_logs_download_done'), 'success');
         })
         .catch(function (err) {
-            showAdminToast(err.message || '下载失败', 'error');
+            showAdminToast(err.message || i18n.t('admin_logs_download_failed'), 'error');
         });
     };
 
@@ -5233,8 +5233,7 @@
 
         // Update welcome title: "欢迎使用 + name"
         var welcomeEls = document.querySelectorAll('[data-product-name-welcome]');
-        var lang = window.i18n ? window.i18n.getLang() : 'zh-CN';
-        var welcomePrefix = lang === 'en-US' ? 'Welcome to ' : '欢迎使用';
+        var welcomePrefix = i18n.t('chat_welcome_prefix');
         welcomeEls.forEach(function (el) {
             el.textContent = welcomePrefix + name;
         });
@@ -5259,7 +5258,7 @@
                 var sel = document.getElementById('batch-product-select');
                 if (!sel) return;
                 var products = data.products || [];
-                sel.innerHTML = '<option value="">公共区</option>';
+                sel.innerHTML = '<option value="">' + i18n.t('batch_product_public') + '</option>';
                 products.forEach(function (p) {
                     sel.innerHTML += '<option value="' + p.id + '">' + p.name + '</option>';
                 });
@@ -5272,14 +5271,14 @@
         var pathInput = document.getElementById('batch-import-path');
         var importPath = (pathInput.value || '').trim();
         if (!importPath) {
-            showAdminToast('请输入文件或目录路径', 'error');
+            showAdminToast(i18n.t('batch_path_required'), 'error');
             return;
         }
 
         var productID = document.getElementById('batch-product-select').value || '';
         var btn = document.getElementById('batch-import-btn');
         btn.disabled = true;
-        btn.textContent = '导入中...';
+        btn.textContent = i18n.t('batch_importing');
         // Reset UI
         var progressSection = document.getElementById('batch-progress-section');
         var reportSection = document.getElementById('batch-report-section');
@@ -5287,7 +5286,7 @@
         reportSection.classList.add('hidden');
         document.getElementById('batch-progress-log').innerHTML = '';
         document.getElementById('batch-progress-fill').style.width = '0%';
-        document.getElementById('batch-progress-text').textContent = '准备中...';
+        document.getElementById('batch-progress-text').textContent = i18n.t('batch_preparing');
         document.getElementById('batch-progress-percent').textContent = '0%';
 
         var token = getAdminToken();
@@ -5336,10 +5335,10 @@
 
             return reader.read().then(processChunk);
         }).catch(function (err) {
-            showAdminToast('批量导入失败: ' + err.message, 'error');
+            showAdminToast(i18n.t('batch_import_failed') + ': ' + err.message, 'error');
         }).finally(function () {
             btn.disabled = false;
-            btn.textContent = '开始导入';
+            btn.textContent = i18n.t('batch_start_btn');
         });
     };
 
@@ -5350,7 +5349,7 @@
         var percentEl = document.getElementById('batch-progress-percent');
 
         if (event === 'start') {
-            textEl.textContent = '共 ' + data.total + ' 个文件，开始导入...';
+            textEl.textContent = i18n.t('batch_start_text', { total: data.total });
         } else if (event === 'progress') {
             var pct = data.percent != null ? data.percent : (data.total > 0 ? Math.round((data.index / data.total) * 100) : 0);
             fillEl.style.width = pct + '%';
@@ -5369,7 +5368,7 @@
             logEl.appendChild(item);
             logEl.scrollTop = logEl.scrollHeight;
         } else if (event === 'done') {
-            textEl.textContent = '导入完成';
+            textEl.textContent = i18n.t('batch_done_text');
             percentEl.textContent = '100%';
             fillEl.style.width = '100%';
             showBatchReport(data);
@@ -5382,9 +5381,9 @@
 
         var summary = document.getElementById('batch-report-summary');
         summary.innerHTML =
-            '<div class="batch-report-stat stat-total"><span class="stat-value">' + data.total + '</span><span class="stat-label">总文件数</span></div>' +
-            '<div class="batch-report-stat stat-success"><span class="stat-value">' + data.success + '</span><span class="stat-label">成功</span></div>' +
-            '<div class="batch-report-stat stat-failed"><span class="stat-value">' + data.failed + '</span><span class="stat-label">失败</span></div>';
+            '<div class="batch-report-stat stat-total"><span class="stat-value">' + data.total + '</span><span class="stat-label">' + i18n.t('batch_report_total') + '</span></div>' +
+            '<div class="batch-report-stat stat-success"><span class="stat-value">' + data.success + '</span><span class="stat-label">' + i18n.t('batch_report_success') + '</span></div>' +
+            '<div class="batch-report-stat stat-failed"><span class="stat-value">' + data.failed + '</span><span class="stat-label">' + i18n.t('batch_report_failed') + '</span></div>';
 
         var failedSection = document.getElementById('batch-report-failed');
         var failedList = document.getElementById('batch-report-failed-list');

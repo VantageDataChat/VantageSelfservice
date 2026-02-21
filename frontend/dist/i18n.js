@@ -117,6 +117,7 @@
             'chat_no_default_product': '不设置',
             'chat_default_product_saved': '默认产品已保存',
             'chat_welcome_title': '欢迎使用软件自助服务平台',
+            'chat_welcome_prefix': '欢迎使用',
             'chat_welcome_desc': '请输入您的问题，我将为您查找相关资料并提供解答。',
             'chat_input_placeholder': '输入您的问题...（可粘贴或上传图片）',
             'chat_image_preview_alt': '预览',
@@ -137,6 +138,8 @@
             'chat_source_image': '📷 图片来源',
             'chat_source_download': '点击下载文档',
             'chat_media_seek_hint': '点击跳转到该时间点',
+            'chat_play_audio': '播放音频',
+            'chat_play_video': '播放视频',
             'chat_not_satisfied': '建议补充资料',
             'chat_not_satisfied_confirm': '确认将此问题转为待回答问题？',
             'chat_not_satisfied_confirm_yes': '确认',
@@ -616,6 +619,28 @@
             'video_upload_failed': '视频上传失败',
             'video_remove_label': '删除视频',
 
+            // Log management
+            'admin_logs_load_failed': '加载日志失败',
+            'admin_logs_unknown_error': '未知错误',
+            'admin_logs_rotation_range_error': '轮转大小必须在 1-10240 MB 之间',
+            'admin_logs_rotation_saved': '日志轮转大小已保存',
+            'admin_logs_save_failed': '保存失败',
+            'admin_logs_download_failed': '下载失败',
+            'admin_logs_download_done': '日志下载完成',
+
+            // Batch import
+            'batch_product_public': '公共区',
+            'batch_path_required': '请输入文件或目录路径',
+            'batch_importing': '导入中...',
+            'batch_start_btn': '开始导入',
+            'batch_preparing': '准备中...',
+            'batch_import_failed': '批量导入失败',
+            'batch_start_text': '共 {total} 个文件，开始导入...',
+            'batch_done_text': '导入完成',
+            'batch_report_total': '总文件数',
+            'batch_report_success': '成功',
+            'batch_report_failed': '失败',
+
             // Language
             'lang_switch': 'EN'
         },
@@ -729,6 +754,7 @@
             'chat_no_default_product': 'None',
             'chat_default_product_saved': 'Default product saved',
             'chat_welcome_title': 'Welcome to Software Self-Service Platform',
+            'chat_welcome_prefix': 'Welcome to ',
             'chat_welcome_desc': 'Enter your question and I will find relevant information for you.',
             'chat_input_placeholder': 'Type your question... (paste or upload images supported)',
             'chat_image_preview_alt': 'Preview',
@@ -749,6 +775,8 @@
             'chat_source_image': '📷 Image source',
             'chat_source_download': 'Click to download document',
             'chat_media_seek_hint': 'Click to seek to this time',
+            'chat_play_audio': 'Play audio',
+            'chat_play_video': 'Play video',
             'chat_not_satisfied': 'Not Satisfied',
             'chat_not_satisfied_confirm': 'Convert this question to a pending question for manual review?',
             'chat_not_satisfied_confirm_yes': 'Confirm',
@@ -1227,6 +1255,28 @@
             'video_size_error': 'Video file size cannot exceed {size}MB',
             'video_upload_failed': 'Video upload failed',
             'video_remove_label': 'Remove video',
+
+            // Log management
+            'admin_logs_load_failed': 'Failed to load logs',
+            'admin_logs_unknown_error': 'Unknown error',
+            'admin_logs_rotation_range_error': 'Rotation size must be between 1-10240 MB',
+            'admin_logs_rotation_saved': 'Log rotation size saved',
+            'admin_logs_save_failed': 'Save failed',
+            'admin_logs_download_failed': 'Download failed',
+            'admin_logs_download_done': 'Log download complete',
+
+            // Batch import
+            'batch_product_public': 'Public Library',
+            'batch_path_required': 'Please enter a file or directory path',
+            'batch_importing': 'Importing...',
+            'batch_start_btn': 'Start Import',
+            'batch_preparing': 'Preparing...',
+            'batch_import_failed': 'Batch import failed',
+            'batch_start_text': '{total} files, starting import...',
+            'batch_done_text': 'Import complete',
+            'batch_report_total': 'Total Files',
+            'batch_report_success': 'Success',
+            'batch_report_failed': 'Failed',
 
             // Language
             'lang_switch': '中文'
