@@ -1437,7 +1437,15 @@ func (dm *DocumentManager) insertDocument(doc *DocumentInfo, contentHash string)
 
 // updateDocumentStatus updates the status and error fields of a document.
 func (dm *DocumentManager) updateDocumentStatus(docID, status, errMsg string) {
-	dm.db.Exec(`UPDATE documents SET status = ?, error = ? WHERE id = ?`, status, errMsg, docID)
+	result, err := dm.db.Exec(`UPDATE documents SET status = ?, error = ? WHERE id = ?`, status, errMsg, docID)
+	if err != nil {
+		log.Printf("[DB] Failed to update document status for %s: %v", docID, err)
+		errlog.Logf("[DB] Failed to update document status for doc=%s status=%s: %v", docID, status, err)
+		return
+	}
+	if rowsAffected, _ := result.RowsAffected(); rowsAffected == 0 {
+		log.Printf("[DB] Warning: no rows updated for document %s (status=%s)", docID, status)
+	}
 }
 
 // saveOriginalFile saves the uploaded file to data/uploads/{docID}/{filename}.

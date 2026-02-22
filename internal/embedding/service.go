@@ -96,6 +96,9 @@ type multimodalData struct {
 
 // Embed converts a single text string into an embedding vector.
 func (s *APIEmbeddingService) Embed(text string) ([]float64, error) {
+	if s.Endpoint == "" {
+		return nil, fmt.Errorf("embedding API endpoint not configured")
+	}
 	if s.UseMultimodal {
 		return s.embedMultimodal(text)
 	}
@@ -113,6 +116,9 @@ func (s *APIEmbeddingService) Embed(text string) ([]float64, error) {
 func (s *APIEmbeddingService) EmbedBatch(texts []string) ([][]float64, error) {
 	if len(texts) == 0 {
 		return nil, nil
+	}
+	if s.Endpoint == "" {
+		return nil, fmt.Errorf("embedding API endpoint not configured")
 	}
 	// Limit batch size to prevent excessive API payload
 	const maxBatchSize = 256
@@ -219,6 +225,9 @@ func (s *APIEmbeddingService) embedBatchMultimodal(texts []string) ([][]float64,
 
 // EmbedImageURL embeds an image via its URL using the multimodal API.
 func (s *APIEmbeddingService) EmbedImageURL(imageURL string) ([]float64, error) {
+	if s.Endpoint == "" {
+		return nil, fmt.Errorf("embedding API endpoint not configured")
+	}
 	if !s.UseMultimodal {
 		return nil, fmt.Errorf("image embedding requires multimodal mode")
 	}
