@@ -4,8 +4,12 @@ package parser
 
 import (
 	"bytes"
+	"compress/zlib"
 	"encoding/binary"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"log"
 	"strings"
@@ -571,6 +575,10 @@ func extractPPTText(data []byte) string {
 // Supported BLIP types:
 //   0xF01A – EMF, 0xF01B – WMF, 0xF01D – JPEG, 0xF01E – PNG
 //
+// For EMF/WMF metafiles, the function decompresses the data (if zlib-compressed)
+// and attempts to extract embedded raster images. If no embedded raster is found,
+// the metafile is skipped since Go cannot natively render WMF/EMF.
+//
 // Any individual record that cannot be parsed is silently skipped.
 func extractPPTImages(picturesData []byte) []ImageRef {
 	var images []ImageRef
@@ -593,17 +601,21 @@ func extractPPTImages(picturesData []byte) []ImageRef {
 		recordDataStart := pos + 8
 		pos += 8 + int(recLen) // advance to next record regardless of outcome
 
+		isMetafile := false
+
 		// Determine BLIP header size based on recType and whether it's dual-UID.
 		// Dual-UID is indicated by recInstance having bit 4 set (recInstance & 0x10 != 0).
 		var blipHeaderSize int
+		var uidSize int
 		switch recType {
 		case 0xF01A, 0xF01B: // EMF, WMF
-			// Single UID: 16 (UID) + 34 (metafile header) = 50
-			// Dual UID:   32 (2×UID) + 34 (metafile header) = 66
+			isMetafile = true
 			if recInstance&0x10 != 0 {
-				blipHeaderSize = 66
+				uidSize = 32
+				blipHeaderSize = 66 // 32 (2×UID) + 34 (metafile header)
 			} else {
-				blipHeaderSize = 50
+				uidSize = 16
+				blipHeaderSize = 50 // 16 (UID) + 34 (metafile header)
 			}
 		case 0xF01D, 0xF01E: // JPEG, PNG
 			// Single UID: 16 (UID) + 1 (tag) = 17
@@ -625,6 +637,45 @@ func extractPPTImages(picturesData []byte) []ImageRef {
 
 		imageData := append([]byte(nil), picturesData[recordDataStart+blipHeaderSize:recordDataStart+int(recLen)]...)
 
+		// For metafiles (EMF/WMF), decompress and try to extract embedded raster images
+		if isMetafile {
+			// OfficeArtMetafileHeader is 34 bytes, located after the UID(s).
+			// Layout: cbSize(4) + rcBounds(16) + ptSize(8) + cbSave(4) + compression(1) + filter(1)
+			// compression byte is at offset uidSize + 32 from recordDataStart
+			metaHeaderStart := recordDataStart + uidSize
+			if metaHeaderStart+34 > recordDataStart+int(recLen) {
+				continue
+			}
+			compression := picturesData[metaHeaderStart+32]
+
+			var rawMetafile []byte
+			if compression == 0x00 {
+				// DEFLATE compressed — decompress with zlib
+				r, err := zlib.NewReader(bytes.NewReader(imageData))
+				if err != nil {
+					log.Printf("Warning: PPT metafile zlib decompress failed: %v", err)
+					continue
+				}
+				rawMetafile, err = io.ReadAll(r)
+				r.Close()
+				if err != nil {
+					log.Printf("Warning: PPT metafile zlib read failed: %v", err)
+					continue
+				}
+			} else {
+				// No compression (0xFE)
+				rawMetafile = imageData
+			}
+
+			// Try to extract embedded raster images from the metafile
+			raster := extractRasterFromMetafile(rawMetafile, recType)
+			if raster == nil || len(raster) < minImageSize {
+				log.Printf("Warning: PPT metafile image %d has no extractable raster data, skipping", imageIndex)
+				continue
+			}
+			imageData = raster
+		}
+
 		// Apply minimum size filter
 		if len(imageData) < minImageSize {
 			continue
@@ -638,6 +689,348 @@ func extractPPTImages(picturesData []byte) []ImageRef {
 	}
 
 	return images
+}
+
+// extractRasterFromMetafile attempts to extract embedded JPEG/PNG/BMP raster
+// images from raw WMF or EMF metafile data. Many PPT metafiles are simple
+// wrappers around a single raster image.
+//
+// For EMF: scans for EMR_STRETCHDIBITS (0x51) and EMR_SETDIBITSTODEVICE (0x49)
+// records which contain Device Independent Bitmap (DIB) data.
+//
+// For WMF: scans for embedded JPEG/PNG by magic byte detection, and also looks
+// for META_STRETCHDIB (0x0F43) records containing DIB data.
+//
+// Returns the largest found raster image as JPEG/PNG bytes, or nil if none found.
+func extractRasterFromMetafile(data []byte, recType uint16) []byte {
+	// Strategy 1: Scan for embedded JPEG/PNG by magic bytes (works for both WMF and EMF)
+	if img := findEmbeddedRaster(data); img != nil {
+		return img
+	}
+
+	// Strategy 2: Parse EMF records for DIB data
+	if recType == 0xF01A { // EMF
+		if img := extractDIBFromEMF(data); img != nil {
+			return img
+		}
+	}
+
+	// Strategy 3: Parse WMF records for DIB data
+	if recType == 0xF01B { // WMF
+		if img := extractDIBFromWMF(data); img != nil {
+			return img
+		}
+	}
+
+	return nil
+}
+
+// findEmbeddedRaster scans binary data for JPEG or PNG magic bytes and returns
+// the largest contiguous image found. This handles the common case where a
+// metafile is just a wrapper around a raster image.
+func findEmbeddedRaster(data []byte) []byte {
+	var best []byte
+
+	// Look for JPEG (FF D8 FF)
+	for i := 0; i+3 <= len(data); i++ {
+		if data[i] == 0xFF && data[i+1] == 0xD8 && data[i+2] == 0xFF {
+			// Find JPEG end marker (FF D9)
+			end := findJPEGEnd(data[i:])
+			if end > 0 && end > len(best) {
+				best = data[i : i+end]
+			}
+		}
+	}
+
+	// Look for PNG (89 50 4E 47)
+	for i := 0; i+8 <= len(data); i++ {
+		if data[i] == 0x89 && data[i+1] == 0x50 && data[i+2] == 0x4E && data[i+3] == 0x47 {
+			// Find PNG end (IEND chunk)
+			end := findPNGEnd(data[i:])
+			if end > 0 && end > len(best) {
+				best = data[i : i+end]
+			}
+		}
+	}
+
+	if len(best) >= minImageSize {
+		return append([]byte(nil), best...)
+	}
+	return nil
+}
+
+// findJPEGEnd returns the length of a JPEG image starting at data[0],
+// by scanning for the EOI marker (FF D9). Returns 0 if not found.
+func findJPEGEnd(data []byte) int {
+	for i := 2; i+1 < len(data); i++ {
+		if data[i] == 0xFF && data[i+1] == 0xD9 {
+			return i + 2
+		}
+	}
+	return 0
+}
+
+// findPNGEnd returns the length of a PNG image starting at data[0],
+// by scanning for the IEND chunk. Returns 0 if not found.
+func findPNGEnd(data []byte) int {
+	// IEND chunk: length(4) + "IEND" + CRC(4) = 12 bytes
+	iend := []byte("IEND")
+	for i := 8; i+8 <= len(data); i++ {
+		if bytes.Equal(data[i:i+4], iend) {
+			// IEND chunk ends 4 bytes after "IEND" (CRC)
+			end := i + 4 + 4
+			if end <= len(data) {
+				return end
+			}
+		}
+	}
+	return 0
+}
+
+// extractDIBFromEMF parses EMF records looking for bitmap records and extracts
+// the DIB data, converting it to PNG.
+func extractDIBFromEMF(data []byte) []byte {
+	// EMF header: must start with record type 1 (EMR_HEADER)
+	if len(data) < 8 {
+		return nil
+	}
+
+	var bestDIB []byte
+	pos := 0
+
+	for pos+8 <= len(data) {
+		recType := binary.LittleEndian.Uint32(data[pos : pos+4])
+		recSize := binary.LittleEndian.Uint32(data[pos+4 : pos+8])
+
+		if recSize < 8 || int(recSize) > len(data)-pos {
+			break
+		}
+
+		recData := data[pos : pos+int(recSize)]
+
+		switch recType {
+		case 0x51: // EMR_STRETCHDIBITS
+			if dib := parseDIBFromStretchDIBits(recData); len(dib) > len(bestDIB) {
+				bestDIB = dib
+			}
+		case 0x49: // EMR_SETDIBITSTODEVICE
+			if dib := parseDIBFromSetDIBits(recData); len(dib) > len(bestDIB) {
+				bestDIB = dib
+			}
+		}
+
+		pos += int(recSize)
+	}
+
+	if len(bestDIB) < minImageSize {
+		return nil
+	}
+	return convertDIBToPNG(bestDIB)
+}
+
+// parseDIBFromStretchDIBits extracts the DIB (header + pixel data) from an
+// EMR_STRETCHDIBITS record.
+// Record layout (after Type and Size):
+//   Bounds(16) + xDest(4) + yDest(4) + xSrc(4) + ySrc(4) + cxSrc(4) + cySrc(4)
+//   + offBmiSrc(4) + cbBmiSrc(4) + offBitsSrc(4) + cbBitsSrc(4) + UsageSrc(4)
+//   + BitBltRasterOperation(4) + cxDest(4) + cyDest(4)
+//   + BitmapBuffer(variable)
+func parseDIBFromStretchDIBits(rec []byte) []byte {
+	if len(rec) < 80 {
+		return nil
+	}
+	offBmi := binary.LittleEndian.Uint32(rec[48:52])
+	cbBmi := binary.LittleEndian.Uint32(rec[52:56])
+	offBits := binary.LittleEndian.Uint32(rec[56:60])
+	cbBits := binary.LittleEndian.Uint32(rec[60:64])
+
+	if cbBmi == 0 || cbBits == 0 {
+		return nil
+	}
+	if int(offBmi+cbBmi) > len(rec) || int(offBits+cbBits) > len(rec) {
+		return nil
+	}
+
+	// Combine BITMAPINFO header + pixel data into a single DIB
+	dib := make([]byte, cbBmi+cbBits)
+	copy(dib, rec[offBmi:offBmi+cbBmi])
+	copy(dib[cbBmi:], rec[offBits:offBits+cbBits])
+	return dib
+}
+
+// parseDIBFromSetDIBits extracts the DIB from an EMR_SETDIBITSTODEVICE record.
+// Record layout (after Type and Size):
+//   Bounds(16) + xDest(4) + yDest(4) + xSrc(4) + ySrc(4) + cxSrc(4) + cySrc(4)
+//   + offBmiSrc(4) + cbBmiSrc(4) + offBitsSrc(4) + cbBitsSrc(4) + UsageSrc(4)
+//   + iStartScan(4) + cScans(4)
+func parseDIBFromSetDIBits(rec []byte) []byte {
+	if len(rec) < 76 {
+		return nil
+	}
+	offBmi := binary.LittleEndian.Uint32(rec[48:52])
+	cbBmi := binary.LittleEndian.Uint32(rec[52:56])
+	offBits := binary.LittleEndian.Uint32(rec[56:60])
+	cbBits := binary.LittleEndian.Uint32(rec[60:64])
+
+	if cbBmi == 0 || cbBits == 0 {
+		return nil
+	}
+	if int(offBmi+cbBmi) > len(rec) || int(offBits+cbBits) > len(rec) {
+		return nil
+	}
+
+	dib := make([]byte, cbBmi+cbBits)
+	copy(dib, rec[offBmi:offBmi+cbBmi])
+	copy(dib[cbBmi:], rec[offBits:offBits+cbBits])
+	return dib
+}
+
+// extractDIBFromWMF parses WMF records looking for META_STRETCHDIB (0x0F43)
+// and META_DIBSTRETCHBLT (0x0B41) records containing DIB data.
+func extractDIBFromWMF(data []byte) []byte {
+	// WMF files may start with a placeable header (magic 0x9AC6CDD7) or
+	// directly with the standard header.
+	pos := 0
+	if len(data) >= 4 && binary.LittleEndian.Uint32(data[0:4]) == 0x9AC6CDD7 {
+		pos = 22 // skip placeable header
+	}
+
+	// Standard WMF header is 18 bytes minimum
+	if pos+18 > len(data) {
+		return nil
+	}
+	// Skip standard header: Type(2) + HeaderSize(2) + Version(2) + FileSize(4) + ...
+	headerSize := binary.LittleEndian.Uint16(data[pos+2 : pos+4])
+	pos += int(headerSize) * 2 // headerSize is in 16-bit words
+
+	var bestDIB []byte
+
+	for pos+6 <= len(data) {
+		// WMF record: Size(4 bytes, in 16-bit words) + Function(2 bytes)
+		recSizeWords := binary.LittleEndian.Uint32(data[pos : pos+4])
+		recFunc := binary.LittleEndian.Uint16(data[pos+4 : pos+6])
+		recSizeBytes := int(recSizeWords) * 2
+
+		if recSizeBytes < 6 || pos+recSizeBytes > len(data) {
+			break
+		}
+
+		// End of records marker
+		if recFunc == 0x0000 {
+			break
+		}
+
+		recData := data[pos : pos+recSizeBytes]
+
+		switch recFunc {
+		case 0x0F43: // META_STRETCHDIB
+			// Parameters: RasterOp(4) + SrcHeight(2) + SrcWidth(2) + YSrc(2) + XSrc(2)
+			//           + DestHeight(2) + DestWidth(2) + YDest(2) + XDest(2) + DIB(variable)
+			if len(recData) > 6+22 {
+				dib := recData[6+22:] // skip record header (6) + parameters (22)
+				if len(dib) > len(bestDIB) {
+					bestDIB = append([]byte(nil), dib...)
+				}
+			}
+		case 0x0B41: // META_DIBSTRETCHBLT
+			// Parameters: RasterOp(4) + SrcHeight(2) + SrcWidth(2) + YSrc(2) + XSrc(2)
+			//           + DestHeight(2) + DestWidth(2) + YDest(2) + XDest(2) + DIB(variable)
+			if len(recData) > 6+22 {
+				dib := recData[6+22:]
+				if len(dib) > len(bestDIB) {
+					bestDIB = append([]byte(nil), dib...)
+				}
+			}
+		}
+
+		pos += recSizeBytes
+	}
+
+	if len(bestDIB) < minImageSize {
+		return nil
+	}
+	return convertDIBToPNG(bestDIB)
+}
+
+// convertDIBToPNG converts a raw Device Independent Bitmap (BITMAPINFO header +
+// pixel data) to PNG format. Supports 24-bit and 32-bit uncompressed DIBs,
+// as well as DIBs where the pixel data is actually embedded JPEG or PNG.
+func convertDIBToPNG(dib []byte) []byte {
+	if len(dib) < 40 {
+		return nil
+	}
+
+	// BITMAPINFOHEADER
+	biSize := binary.LittleEndian.Uint32(dib[0:4])
+	biWidth := int32(binary.LittleEndian.Uint32(dib[4:8]))
+	biHeight := int32(binary.LittleEndian.Uint32(dib[8:12]))
+	biBitCount := binary.LittleEndian.Uint16(dib[14:16])
+	biCompression := binary.LittleEndian.Uint32(dib[16:20])
+
+	// BI_JPEG (4) or BI_PNG (5) — pixel data is embedded JPEG/PNG
+	if biCompression == 4 || biCompression == 5 {
+		pixelData := dib[biSize:]
+		if len(pixelData) >= minImageSize {
+			return append([]byte(nil), pixelData...)
+		}
+		return nil
+	}
+
+	// Only handle uncompressed (BI_RGB = 0) 24-bit or 32-bit
+	if biCompression != 0 || (biBitCount != 24 && biBitCount != 32) {
+		return nil
+	}
+
+	w := int(biWidth)
+	if w < 0 {
+		w = -w
+	}
+	h := int(biHeight)
+	topDown := biHeight < 0
+	if h < 0 {
+		h = -h
+	}
+
+	if w == 0 || h == 0 || w > 20000 || h > 20000 {
+		return nil
+	}
+
+	bytesPerPixel := int(biBitCount) / 8
+	stride := (w*bytesPerPixel + 3) & ^3 // rows are padded to 4-byte boundary
+	pixelData := dib[biSize:]
+
+	if len(pixelData) < stride*h {
+		return nil
+	}
+
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		srcY := y
+		if !topDown {
+			srcY = h - 1 - y // DIB is bottom-up by default
+		}
+		rowStart := srcY * stride
+		for x := 0; x < w; x++ {
+			off := rowStart + x*bytesPerPixel
+			b := pixelData[off]
+			g := pixelData[off+1]
+			r := pixelData[off+2]
+			a := uint8(255)
+			if bytesPerPixel == 4 {
+				a = pixelData[off+3]
+				if a == 0 && (r != 0 || g != 0 || b != 0) {
+					a = 255 // fix pre-multiplied alpha with non-zero color
+				}
+			}
+			img.SetRGBA(x, y, color.RGBA{R: r, G: g, B: b, A: a})
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil
+	}
+	return buf.Bytes()
 }
 
 // extractDocImages scans the raw bytes of a DOC Data stream for embedded
