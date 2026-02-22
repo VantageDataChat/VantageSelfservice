@@ -16,7 +16,6 @@ import (
 	_ "image/png"
 	"io"
 	"log"
-	"math"
 	"net"
 	"net/http"
 	"os"
@@ -399,10 +398,11 @@ func resizeImageForOCR(imgData []byte) []byte {
 }
 
 // resizeImageForEmbedding resizes an image so its total pixel count stays within
-// the embedding API limit (36 million pixels). Uses a safe margin of 35M pixels.
+// the embedding API limit. Embedding models typically resize internally to
+// 224–512px, so we cap the longest edge at 1024px to keep base64 payloads
+// small and avoid API timeouts.
 // Returns nil if the image format is not supported (e.g. EMF/WMF metafiles).
-// Returns the original data unchanged if already within bounds.
-const embeddingMaxPixels = 35_000_000
+const embeddingMaxEdge = 1024
 
 func resizeImageForEmbedding(imgData []byte) []byte {
 	src, _, err := image.Decode(bytes.NewReader(imgData))
@@ -414,46 +414,52 @@ func resizeImageForEmbedding(imgData []byte) []byte {
 
 	bounds := src.Bounds()
 	w, h := bounds.Dx(), bounds.Dy()
-	totalPixels := w * h
 
-	needsResize := totalPixels > embeddingMaxPixels
-
-	// Check if the raw bytes are a clean JPEG or PNG that the embedding API
-	// can accept directly.  Legacy PPT extraction sometimes produces data
-	// with extra header bytes that confuse external APIs, so we re-encode
-	// whenever the magic bytes don't match a standard image format.
-	isCleanImage := (len(imgData) >= 3 && imgData[0] == 0xFF && imgData[1] == 0xD8 && imgData[2] == 0xFF) || // JPEG
-		(len(imgData) >= 4 && string(imgData[:4]) == "\x89PNG") // PNG
-
-	if !needsResize && isCleanImage {
-		return imgData
+	// Already within target size and is a standard format — return as-is
+	if w <= embeddingMaxEdge && h <= embeddingMaxEdge {
+		if isStandardImageFormat(imgData) {
+			return imgData
+		}
 	}
 
-	var dst image.Image = src
-	if needsResize {
-		scale := math.Sqrt(float64(embeddingMaxPixels) / float64(totalPixels))
-		newW := int(float64(w) * scale)
-		newH := int(float64(h) * scale)
+	// Calculate new dimensions preserving aspect ratio
+	newW, newH := w, h
+	if w > embeddingMaxEdge || h > embeddingMaxEdge {
+		if w >= h {
+			newW = embeddingMaxEdge
+			newH = h * embeddingMaxEdge / w
+		} else {
+			newH = embeddingMaxEdge
+			newW = w * embeddingMaxEdge / h
+		}
 		if newW < 1 {
 			newW = 1
 		}
 		if newH < 1 {
 			newH = 1
 		}
-		log.Printf("[Embed] resizing image from %dx%d (%d px) to %dx%d for embedding API limit", w, h, totalPixels, newW, newH)
-		canvas := image.NewRGBA(image.Rect(0, 0, newW, newH))
-		draw.BiLinear.Scale(canvas, canvas.Bounds(), src, bounds, draw.Over, nil)
-		dst = canvas
+		log.Printf("[Embed] resizing image from %dx%d to %dx%d for embedding", w, h, newW, newH)
 	}
 
+	dst := image.NewRGBA(image.Rect(0, 0, newW, newH))
+	draw.BiLinear.Scale(dst, dst.Bounds(), src, bounds, draw.Over, nil)
+
 	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 90}); err != nil {
-		if isCleanImage {
-			return imgData
-		}
+	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 85}); err != nil {
 		return nil
 	}
 	return buf.Bytes()
+}
+
+// isStandardImageFormat checks if the data starts with JPEG or PNG magic bytes.
+func isStandardImageFormat(data []byte) bool {
+	if len(data) >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF {
+		return true // JPEG
+	}
+	if len(data) >= 4 && string(data[:4]) == "\x89PNG" {
+		return true // PNG
+	}
+	return false
 }
 
 // detectImageMIME returns the MIME type based on image magic bytes.
