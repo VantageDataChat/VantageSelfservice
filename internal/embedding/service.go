@@ -163,48 +163,69 @@ func (s *APIEmbeddingService) callAPI(input interface{}) ([]embeddingData, error
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	url := strings.TrimRight(s.Endpoint, "/") + "/embeddings"
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if s.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+s.APIKey)
-	}
+	apiURL := strings.TrimRight(s.Endpoint, "/") + "/embeddings"
 
-	resp, err := s.client.Do(req)
-	if err != nil {
-		errlog.Logf("[Embed] text embedding API request failed: %v", err)
-		return nil, fmt.Errorf("embedding API request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20)) // 50MB max response
-	if err != nil {
-		errlog.Logf("[Embed] failed to read text embedding response: %v", err)
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		var errResp embeddingResponse
-		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error != nil {
-			errlog.Logf("[Embed] text embedding API error (HTTP %d): %s", resp.StatusCode, errResp.Error.Message)
-			return nil, fmt.Errorf("embedding API error (HTTP %d): %s", resp.StatusCode, errResp.Error.Message)
+	const maxRetries = 3
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(attempt) * 5 * time.Second
+			log.Printf("[Embed] text embedding retry %d/%d after %v", attempt+1, maxRetries, backoff)
+			time.Sleep(backoff)
 		}
-		errlog.Logf("[Embed] text embedding API error (HTTP %d): %s", resp.StatusCode, string(respBody))
-		return nil, fmt.Errorf("embedding API error (HTTP %d): %s", resp.StatusCode, string(respBody))
+
+		req, err := http.NewRequest(http.MethodPost, apiURL, bytes.NewReader(bodyBytes))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if s.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+s.APIKey)
+		}
+
+		resp, err := s.client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("embedding API request failed: %w", err)
+			errlog.Logf("[Embed] text embedding API request failed (attempt %d/%d): %v", attempt+1, maxRetries, err)
+			continue
+		}
+
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20)) // 50MB max response
+		resp.Body.Close()
+		if err != nil {
+			lastErr = fmt.Errorf("failed to read response body: %w", err)
+			errlog.Logf("[Embed] failed to read text embedding response (attempt %d/%d): %v", attempt+1, maxRetries, err)
+			continue
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			lastErr = fmt.Errorf("embedding API error (HTTP %d): %s", resp.StatusCode, string(respBody))
+			errlog.Logf("[Embed] text embedding API server error (attempt %d/%d, HTTP %d): %s", attempt+1, maxRetries, resp.StatusCode, string(respBody))
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			var errResp embeddingResponse
+			if json.Unmarshal(respBody, &errResp) == nil && errResp.Error != nil {
+				errlog.Logf("[Embed] text embedding API error (HTTP %d): %s", resp.StatusCode, errResp.Error.Message)
+				return nil, fmt.Errorf("embedding API error (HTTP %d): %s", resp.StatusCode, errResp.Error.Message)
+			}
+			errlog.Logf("[Embed] text embedding API error (HTTP %d): %s", resp.StatusCode, string(respBody))
+			return nil, fmt.Errorf("embedding API error (HTTP %d): %s", resp.StatusCode, string(respBody))
+		}
+
+		var result embeddingResponse
+		if err := json.Unmarshal(respBody, &result); err != nil {
+			return nil, fmt.Errorf("failed to decode response: %w", err)
+		}
+		if result.Error != nil {
+			return nil, fmt.Errorf("embedding API error: %s", result.Error.Message)
+		}
+
+		return result.Data, nil
 	}
 
-	var result embeddingResponse
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-	if result.Error != nil {
-		return nil, fmt.Errorf("embedding API error: %s", result.Error.Message)
-	}
-
-	return result.Data, nil
+	return nil, lastErr
 }
 
 // --- Multimodal API calls ---

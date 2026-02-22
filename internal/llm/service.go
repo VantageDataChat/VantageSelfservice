@@ -127,33 +127,46 @@ func BuildMessages(prompt string, context []string, question string) []chatMessa
 }
 
 // Generate sends a prompt with context and question to the LLM and returns the generated answer.
-// It retries once on failure with a brief delay. If both attempts fail, it returns a fallback message.
+// It retries up to 3 times with exponential backoff on transient failures (network errors, 429, 5xx).
 func (s *APILLMService) Generate(prompt string, context []string, question string) (string, error) {
 	messages := BuildMessages(prompt, context, question)
 
-	// First attempt
-	answer, err := s.callAPI(messages)
-	if err == nil {
-		return answer, nil
+	answer, err := s.callAPIWithRetry(messages)
+	if err != nil {
+		return "服务暂时不可用，请稍后重试", fmt.Errorf("LLM API failed after retries: %w", err)
 	}
-	log.Printf("LLM API first attempt failed: %v", err)
+	return answer, nil
+}
 
-	// Brief delay before retry
-	time.Sleep(500 * time.Millisecond)
+// callAPIWithRetry calls the LLM API with retry and exponential backoff for transient errors.
+func (s *APILLMService) callAPIWithRetry(messages []chatMessage) (string, error) {
+	const maxRetries = 3
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(attempt) * 5 * time.Second
+			log.Printf("[LLM] retry %d/%d after %v", attempt+1, maxRetries, backoff)
+			time.Sleep(backoff)
+		}
 
-	// Retry once
-	answer, err = s.callAPI(messages)
-	if err == nil {
-		return answer, nil
+		answer, err, retryable := s.callAPI(messages)
+		if err == nil {
+			return answer, nil
+		}
+		lastErr = err
+		if !retryable {
+			break
+		}
+		log.Printf("[LLM] attempt %d/%d failed (retryable): %v", attempt+1, maxRetries, err)
 	}
-	log.Printf("LLM API retry failed: %v", err)
-	errlog.Logf("[LLM] API failed after retries: %v", err)
 
-	return "服务暂时不可用，请稍后重试", fmt.Errorf("LLM API failed after retries: %w", err)
+	errlog.Logf("[LLM] API failed after retries: %v", lastErr)
+	return "", lastErr
 }
 
 // callAPI sends the chat completion request to the API and returns the generated text.
-func (s *APILLMService) callAPI(messages []chatMessage) (string, error) {
+// The third return value indicates whether the error is retryable (network/server errors).
+func (s *APILLMService) callAPI(messages []chatMessage) (string, error, bool) {
 	reqBody := chatRequest{
 		Model:       s.ModelName,
 		Messages:    messages,
@@ -162,13 +175,13 @@ func (s *APILLMService) callAPI(messages []chatMessage) (string, error) {
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal request: %w", err)
+		return "", fmt.Errorf("failed to marshal request: %w", err), false
 	}
 
 	url := strings.TrimRight(s.Endpoint, "/") + "/chat/completions"
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
+		return "", fmt.Errorf("failed to create request: %w", err), false
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if s.APIKey != "" {
@@ -178,38 +191,43 @@ func (s *APILLMService) callAPI(messages []chatMessage) (string, error) {
 	resp, err := s.client.Do(req)
 	if err != nil {
 		errlog.Logf("[LLM] API request failed: %v", err)
-		return "", fmt.Errorf("LLM API request failed: %w", err)
+		return "", fmt.Errorf("LLM API request failed: %w", err), true // network error, retryable
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20)) // 10MB max response
 	if err != nil {
 		errlog.Logf("[LLM] failed to read response body: %v", err)
-		return "", fmt.Errorf("failed to read response body: %w", err)
+		return "", fmt.Errorf("failed to read response body: %w", err), true
+	}
+
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		errlog.Logf("[LLM] API server error (HTTP %d): %s", resp.StatusCode, string(respBody))
+		return "", fmt.Errorf("LLM API error (HTTP %d): %s", resp.StatusCode, string(respBody)), true
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		var errResp chatResponse
 		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error != nil {
 			errlog.Logf("[LLM] API error (HTTP %d): %s", resp.StatusCode, errResp.Error.Message)
-			return "", fmt.Errorf("LLM API error (HTTP %d): %s", resp.StatusCode, errResp.Error.Message)
+			return "", fmt.Errorf("LLM API error (HTTP %d): %s", resp.StatusCode, errResp.Error.Message), false
 		}
 		errlog.Logf("[LLM] API error (HTTP %d): %s", resp.StatusCode, string(respBody))
-		return "", fmt.Errorf("LLM API error (HTTP %d): %s", resp.StatusCode, string(respBody))
+		return "", fmt.Errorf("LLM API error (HTTP %d): %s", resp.StatusCode, string(respBody)), false
 	}
 
 	var result chatResponse
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("failed to decode response: %w", err)
+		return "", fmt.Errorf("failed to decode response: %w", err), false
 	}
 	if result.Error != nil {
-		return "", fmt.Errorf("LLM API error: %s", result.Error.Message)
+		return "", fmt.Errorf("LLM API error: %s", result.Error.Message), false
 	}
 	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("LLM API returned no choices")
+		return "", fmt.Errorf("LLM API returned no choices"), false
 	}
 
-	return result.Choices[0].Message.Content, nil
+	return result.Choices[0].Message.Content, nil, false
 }
 
 // BuildMessagesWithImage constructs chat messages that include an image for vision-capable LLMs.
@@ -254,23 +272,9 @@ func (s *APILLMService) GenerateWithImage(prompt string, context []string, quest
 
 	messages := BuildMessagesWithImage(prompt, context, question, imageDataURL)
 
-	// First attempt
-	answer, err := s.callAPI(messages)
-	if err == nil {
-		return answer, nil
+	answer, err := s.callAPIWithRetry(messages)
+	if err != nil {
+		return "", fmt.Errorf("LLM vision API failed: %w", err)
 	}
-	log.Printf("LLM vision API first attempt failed: %v", err)
-
-	// Brief delay before retry
-	time.Sleep(500 * time.Millisecond)
-
-	// Retry once
-	answer, err = s.callAPI(messages)
-	if err == nil {
-		return answer, nil
-	}
-	log.Printf("LLM vision API retry also failed: %v", err)
-	errlog.Logf("[LLM] vision API failed after retries: %v", err)
-
-	return "", fmt.Errorf("LLM vision API failed: %w", err)
+	return answer, nil
 }
