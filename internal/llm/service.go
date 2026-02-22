@@ -177,20 +177,24 @@ func (s *APILLMService) callAPI(messages []chatMessage) (string, error) {
 
 	resp, err := s.client.Do(req)
 	if err != nil {
+		errlog.Logf("[LLM] API request failed: %v", err)
 		return "", fmt.Errorf("LLM API request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20)) // 10MB max response
 	if err != nil {
+		errlog.Logf("[LLM] failed to read response body: %v", err)
 		return "", fmt.Errorf("failed to read response body: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		var errResp chatResponse
 		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error != nil {
+			errlog.Logf("[LLM] API error (HTTP %d): %s", resp.StatusCode, errResp.Error.Message)
 			return "", fmt.Errorf("LLM API error (HTTP %d): %s", resp.StatusCode, errResp.Error.Message)
 		}
+		errlog.Logf("[LLM] API error (HTTP %d): %s", resp.StatusCode, string(respBody))
 		return "", fmt.Errorf("LLM API error (HTTP %d): %s", resp.StatusCode, string(respBody))
 	}
 

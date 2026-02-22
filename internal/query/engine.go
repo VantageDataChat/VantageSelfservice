@@ -16,6 +16,7 @@ import (
 
 	"askflow/internal/config"
 	"askflow/internal/embedding"
+	"askflow/internal/errlog"
 	"askflow/internal/llm"
 	"askflow/internal/vectorstore"
 )
@@ -435,6 +436,7 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 	// Step 1: Embed the question
 	queryVector, err := qe.cachedEmbed(req.Question, es)
 	if err != nil {
+		errlog.Logf("[Query] failed to embed question: %v", err)
 		return nil, fmt.Errorf("failed to embed question: %w", err)
 	}
 	log.Printf("[Query] question_len=%d, vector_dim=%d", len(req.Question), len(queryVector))
@@ -469,6 +471,7 @@ func (qe *QueryEngine) Query(req QueryRequest) (*QueryResponse, error) {
 		imgVec, imgErr = es.EmbedImageURL(req.ImageData)
 		if imgErr != nil {
 			log.Printf("[Query] image embedding failed: %v", imgErr)
+			errlog.Logf("[Query] image embedding failed: %v", imgErr)
 		} else {
 			log.Printf("[Query] image vector_dim=%d", len(imgVec))
 			// Use a lower threshold for image search since cross-modal similarity scores are typically lower
