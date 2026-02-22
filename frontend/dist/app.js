@@ -68,6 +68,8 @@
     }
 
     function showPage(pageId) {
+        // Stop document polling when navigating away from admin page
+        if (_docPollTimer) { clearTimeout(_docPollTimer); _docPollTimer = null; }
         var pages = document.querySelectorAll('.page');
         pages.forEach(function (p) { p.classList.add('hidden'); });
         var target = document.getElementById('page-' + pageId);

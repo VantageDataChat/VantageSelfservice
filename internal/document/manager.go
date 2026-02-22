@@ -127,8 +127,8 @@ func (dm *DocumentManager) UploadFile(req UploadFileRequest) (*DocumentInfo, err
 	}
 
 	// File-level dedup: check if identical file content already exists (any status except failed)
-	fileHash := contentHash(string(req.FileData))
-	if existingID := dm.findDocumentByContentHash(fileHash); existingID != "" {
+	fHash := fileHash(req.FileData)
+	if existingID := dm.findDocumentByContentHash(fHash); existingID != "" {
 		return nil, fmt.Errorf("文档内容重复，与已有文档相同")
 	}
 
@@ -146,7 +146,7 @@ func (dm *DocumentManager) UploadFile(req UploadFileRequest) (*DocumentInfo, err
 		ProductID: req.ProductID,
 	}
 
-	if err := dm.insertDocument(doc, fileHash); err != nil {
+	if err := dm.insertDocument(doc, fHash); err != nil {
 		return nil, fmt.Errorf("failed to insert document record: %w", err)
 	}
 
@@ -519,6 +519,14 @@ func contentHash(text string) string {
 	h := sha256.Sum256([]byte(text))
 	return hex.EncodeToString(h[:])
 }
+
+// fileHash computes SHA256 hash of raw byte data without copying.
+// Use this for file-level dedup to avoid allocating a string copy of large files.
+func fileHash(data []byte) string {
+	h := sha256.Sum256(data)
+	return hex.EncodeToString(h[:])
+}
+
 
 // findDocumentByContentHash checks if a document with the same content hash already exists.
 // Returns the document ID if found, empty string otherwise.

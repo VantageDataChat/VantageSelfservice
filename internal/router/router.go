@@ -153,9 +153,9 @@ func Register(app *handler.App) func() {
 	// ── Video upload ──
 	http.HandleFunc("/api/videos/upload", secure(handler.HandleKnowledgeVideoUpload(app)))
 
-	// ── Static file serving ──
-	http.HandleFunc("/api/images/", handler.ServeImages())
-	http.HandleFunc("/api/videos/knowledge/", handler.ServeKnowledgeVideos())
+	// ── Static file serving (public, but with security headers) ──
+	http.HandleFunc("/api/images/", secure(handler.ServeImages()))
+	http.HandleFunc("/api/videos/knowledge/", secure(handler.ServeKnowledgeVideos()))
 
 	// ── Batch import (SSE streaming) ──
 	http.HandleFunc("/api/batch-import", secure(handler.HandleBatchImport(app)))
