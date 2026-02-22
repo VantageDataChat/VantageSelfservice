@@ -27,6 +27,7 @@ type APIEmbeddingService struct {
 	ModelName     string
 	UseMultimodal bool
 	client        *http.Client
+	mmClient      *http.Client // longer timeout for multimodal (image) requests
 }
 
 // NewAPIEmbeddingService creates a new APIEmbeddingService with the given configuration.
@@ -42,6 +43,9 @@ func NewAPIEmbeddingService(endpoint, apiKey, modelName string, useMultimodal bo
 		UseMultimodal: useMultimodal,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
+		},
+		mmClient: &http.Client{
+			Timeout: 120 * time.Second,
 		},
 	}
 }
@@ -255,38 +259,58 @@ func (s *APIEmbeddingService) callMultimodalAPI(input []multimodalInputItem) ([]
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	url := strings.TrimRight(s.Endpoint, "/") + "/embeddings/multimodal"
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if s.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+s.APIKey)
+	apiURL := strings.TrimRight(s.Endpoint, "/") + "/embeddings/multimodal"
+
+	const maxRetries = 3
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(attempt) * 5 * time.Second
+			log.Printf("[Embed] multimodal retry %d/%d after %v", attempt+1, maxRetries, backoff)
+			time.Sleep(backoff)
+		}
+
+		req, err := http.NewRequest(http.MethodPost, apiURL, bytes.NewReader(bodyBytes))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if s.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+s.APIKey)
+		}
+
+		resp, err := s.mmClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("multimodal embedding API request failed: %w", err)
+			continue
+		}
+
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20)) // 50MB max response
+		resp.Body.Close()
+		if err != nil {
+			lastErr = fmt.Errorf("failed to read response body: %w", err)
+			continue
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			lastErr = fmt.Errorf("embedding API error (HTTP %d): %s", resp.StatusCode, string(respBody))
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("embedding API error (HTTP %d): %s", resp.StatusCode, string(respBody))
+		}
+
+		var result multimodalResponse
+		if err := json.Unmarshal(respBody, &result); err != nil {
+			return nil, fmt.Errorf("failed to decode response: %w", err)
+		}
+		if result.Error != nil {
+			return nil, fmt.Errorf("multimodal embedding API error: %s", result.Error.Message)
+		}
+
+		return result.Data.Embedding, nil
 	}
 
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("multimodal embedding API request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20)) // 50MB max response
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("embedding API error (HTTP %d): %s", resp.StatusCode, string(respBody))
-	}
-
-	var result multimodalResponse
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-	if result.Error != nil {
-		return nil, fmt.Errorf("multimodal embedding API error: %s", result.Error.Message)
-	}
-
-	return result.Data.Embedding, nil
+	return nil, lastErr
 }
