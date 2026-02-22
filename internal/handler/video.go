@@ -346,11 +346,6 @@ func HandleVideoAutoSetup(app *App) http.HandlerFunc {
 		}
 		repoDir := filepath.Join(baseDir, "RapidSpeech.cpp")
 		repoURL := "https://github.com/RapidAI/RapidSpeech.cpp"
-		if isChinaRegion {
-			// Use gitee mirror if available, fallback to github
-			repoURL = "https://gitee.com/RapidAI/RapidSpeech.cpp"
-			sendSSE("log", "检测到中国区域，使用 Gitee 镜像", -1)
-		}
 
 		if info, err := os.Stat(repoDir); err == nil && info.IsDir() {
 			sendSSE("log", "仓库目录已存在，执行 git pull...", -1)
@@ -365,20 +360,9 @@ func HandleVideoAutoSetup(app *App) http.HandlerFunc {
 			}
 		} else {
 			if err := runCmd(ctx, false, "git", "clone", "--depth=1", repoURL, repoDir); err != nil {
-				// If gitee failed, try github
-				if isChinaRegion {
-					sendSSE("log", "Gitee 克隆失败，尝试 GitHub...", -1)
-					repoURL = "https://github.com/RapidAI/RapidSpeech.cpp"
-					if err := runCmd(ctx, false, "git", "clone", "--depth=1", repoURL, repoDir); err != nil {
-						sendSSE("error", fmt.Sprintf("克隆仓库失败: %v", err), -1)
-						sendSSE("done", "安装失败", -1)
-						return
-					}
-				} else {
-					sendSSE("error", fmt.Sprintf("克隆仓库失败: %v", err), -1)
-					sendSSE("done", "安装失败", -1)
-					return
-				}
+				sendSSE("error", fmt.Sprintf("克隆仓库失败: %v", err), -1)
+				sendSSE("done", "安装失败", -1)
+				return
 			}
 		}
 		sendSSE("step", "仓库克隆完成 ✓", 45)
