@@ -31,14 +31,19 @@ type videoOCRResult struct {
 //
 // Each phase is independent and fault-tolerant: one phase failing does not block others.
 func (dm *DocumentManager) processVideo(docID, docName string, fileData []byte, productID string) error {
+	log.Printf("[Video] Starting video processing for doc=%s file=%q", docID, docName)
+
 	dm.mu.RLock()
 	cfg := dm.videoConfig
 	dm.mu.RUnlock()
+
+	log.Printf("[Video] Config: FFmpegPath=%q, RapidSpeechPath=%q", cfg.FFmpegPath, cfg.RapidSpeechPath)
 
 	// Locate or save the video file
 	uploadDir := filepath.Join(".", "data", "uploads", docID)
 	videoPath := dm.findSavedFile(uploadDir)
 	if videoPath == "" {
+		log.Printf("[Video] Saving video file to %s", uploadDir)
 		if err := os.MkdirAll(uploadDir, 0755); err != nil {
 			return fmt.Errorf("创建上传目录失败: %w", err)
 		}
@@ -47,10 +52,13 @@ func (dm *DocumentManager) processVideo(docID, docName string, fileData []byte, 
 		if err := os.WriteFile(videoPath, fileData, 0644); err != nil {
 			return fmt.Errorf("保存视频文件失败: %w", err)
 		}
+		log.Printf("[Video] Video file saved to %s", videoPath)
+	} else {
+		log.Printf("[Video] Using existing video file at %s", videoPath)
 	}
 
 	if cfg.FFmpegPath == "" && cfg.RapidSpeechPath == "" {
-		log.Printf("视频检索工具未配置，仅存储文件名作为可搜索文本: %s", docName)
+		log.Printf("[Video] 视频检索工具未配置，仅存储文件名作为可搜索文本: %s", docName)
 		fallbackText := fmt.Sprintf("视频文件: %s", docName)
 		if err := dm.chunkEmbedStore(docID, docName, fallbackText, productID); err != nil {
 			return fmt.Errorf("存储视频文件名向量失败: %w", err)
@@ -58,14 +66,16 @@ func (dm *DocumentManager) processVideo(docID, docName string, fileData []byte, 
 		return nil
 	}
 
+	log.Printf("[Video] Starting video parsing for doc=%s", docID)
 	vp := video.NewParser(cfg)
 	parseResult, err := vp.Parse(videoPath)
 	if err != nil {
+		log.Printf("[Video] Parse failed for doc=%s: %v", docID, err)
 		errlog.Logf("[Video] parse failed doc=%s file=%q: %v", docID, docName, err)
 		return fmt.Errorf("视频解析失败: %w", err)
 	}
 
-	log.Printf("视频解析完成 doc=%s: %d 段转录, %d 个关键帧", docID, len(parseResult.Transcript), len(parseResult.Keyframes))
+	log.Printf("[Video] 视频解析完成 doc=%s: %d 段转录, %d 个关键帧", docID, len(parseResult.Transcript), len(parseResult.Keyframes))
 
 	// Pre-compute which keyframes need OCR before any phase starts
 	ocrEnabled := cfg.KeyframeOCREnabled

@@ -406,3 +406,51 @@ func ListArchives() ([]string, error) {
 	sort.Strings(archives)
 	return archives, nil
 }
+
+// ClearLogs truncates the current error log file and removes all archived logs.
+// Returns the number of archived files removed.
+func ClearLogs() (int, error) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	dir := GetLogDir()
+	path := filepath.Join(dir, logFileName)
+
+	// Count and remove archived logs
+	entries, err := os.ReadDir(dir)
+	archivesRemoved := 0
+	if err == nil {
+		for _, e := range entries {
+			name := e.Name()
+			if strings.HasPrefix(name, "error-") && strings.HasSuffix(name, ".log.gz") {
+				if os.Remove(filepath.Join(dir, name)) == nil {
+					archivesRemoved++
+				}
+			}
+		}
+	}
+
+	// Truncate the current log file
+	if global != nil {
+		global.mu.Lock()
+		if global.file != nil {
+			global.file.Sync()
+			global.file.Close()
+			global.file = nil
+		}
+		// Truncate the file
+		os.Truncate(path, 0)
+		// Reopen the file
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err == nil {
+			global.file = f
+			global.size = 0
+		}
+		global.mu.Unlock()
+	} else {
+		// Logger not initialized, just truncate the file
+		os.Truncate(path, 0)
+	}
+
+	return archivesRemoved, nil
+}

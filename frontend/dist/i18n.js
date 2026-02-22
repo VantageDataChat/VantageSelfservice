@@ -630,6 +630,10 @@
             'admin_logs_save_failed': '保存失败',
             'admin_logs_download_failed': '下载失败',
             'admin_logs_download_done': '日志下载完成',
+            'admin_settings_logs_clear': '清空日志',
+            'admin_logs_clear_confirm': '确定要清空所有日志吗？此操作不可恢复。',
+            'admin_logs_clear_failed': '清空日志失败',
+            'admin_logs_clear_done': '日志已清空',
 
             // Batch import
             'batch_product_public': '公共区',
@@ -1270,6 +1274,10 @@
             'admin_logs_save_failed': 'Save failed',
             'admin_logs_download_failed': 'Download failed',
             'admin_logs_download_done': 'Log download complete',
+            'admin_settings_logs_clear': 'Clear Logs',
+            'admin_logs_clear_confirm': 'Are you sure you want to clear all logs? This action cannot be undone.',
+            'admin_logs_clear_failed': 'Failed to clear logs',
+            'admin_logs_clear_done': 'Logs cleared',
 
             // Batch import
             'batch_product_public': 'Public Library',

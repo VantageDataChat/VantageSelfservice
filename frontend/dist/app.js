@@ -3816,6 +3816,24 @@
         });
     };
 
+    window.confirmClearLogs = function () {
+        if (!confirm(i18n.t('admin_logs_clear_confirm'))) {
+            return;
+        }
+        adminFetch('/api/logs/clear', { method: 'DELETE' })
+        .then(function (res) {
+            if (!res.ok) throw new Error(i18n.t('admin_logs_clear_failed'));
+            return res.json();
+        })
+        .then(function (data) {
+            showAdminToast(i18n.t('admin_logs_clear_done'), 'success');
+            loadRecentLogs();
+        })
+        .catch(function (err) {
+            showAdminToast(err.message || i18n.t('admin_logs_clear_failed'), 'error');
+        });
+    };
+
     // --- Multimodal Settings ---
 
     function loadMultimodalSettings() {

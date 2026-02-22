@@ -387,3 +387,34 @@ func HandleLogsDownload(app *App) http.HandlerFunc {
 		io.Copy(gw, io.LimitReader(f, downloadSize))
 	}
 }
+
+// HandleLogsClear clears all log files (current and archived).
+// DELETE /api/logs/clear
+func HandleLogsClear(app *App) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		_, role, err := GetAdminSession(app, r)
+		if err != nil {
+			WriteAdminSessionError(w, err)
+			return
+		}
+		if role != "super_admin" {
+			WriteError(w, http.StatusForbidden, "无权限")
+			return
+		}
+
+		archivesRemoved, err := errlog.ClearLogs()
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, "清空日志失败: "+err.Error())
+			return
+		}
+
+		WriteJSON(w, http.StatusOK, map[string]interface{}{
+			"status":           "ok",
+			"archives_removed": archivesRemoved,
+		})
+	}
+}

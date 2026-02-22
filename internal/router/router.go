@@ -164,6 +164,7 @@ func Register(app *handler.App) func() {
 	http.HandleFunc("/api/logs/recent", secure(handler.HandleLogsRecent(app)))
 	http.HandleFunc("/api/logs/rotation", secure(handler.HandleLogsRotation(app)))
 	http.HandleFunc("/api/logs/download", secure(handler.HandleLogsDownload(app)))
+	http.HandleFunc("/api/logs/clear", secure(handler.HandleLogsClear(app)))
 
 	// ── Public media streaming ──
 	http.HandleFunc("/api/media/", secure(handler.HandleMediaStream(app)))
